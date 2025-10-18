@@ -42,7 +42,6 @@ data class DoseItem(
     var dosage: String,
     var type: DoseType,
     var schedule: DoseSchedule,
-    var inventory: Int,
     var adherenceLog: MutableList<DoseLog> = mutableListOf()
 )
 
@@ -61,8 +60,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            var darkMode by remember { mutableStateOf(false) }
-            var language by remember { mutableStateOf("Deutsch") }
+            // Standardmäßig Englisch
+            var language by remember { mutableStateOf(AppLanguage.EN) }
+            var darkMode by remember { mutableStateOf(true) }
             SuppleTrackTheme(darkMode) {
                 AppRoot(
                     darkMode = darkMode,
@@ -76,11 +76,9 @@ class MainActivity : ComponentActivity() {
 }
 
 enum class MainScreen(val label: String, val icon: ImageVector) {
-    Checklist("Checkliste", Icons.AutoMirrored.Filled.List), // Icons.Filled.Checklist ersetzt durch List
+    Checklist("Checkliste", Icons.AutoMirrored.Filled.List),
     Calendar("Kalender", Icons.Filled.DateRange),
-    //Profiles("Profile", Icons.Filled.Person),
-    //Export("Export/Backup", Icons.Filled.Warning),
-    //Widget("Widget", Icons.Filled.AddCircle),
+    Manage("Verwalten", Icons.Filled.Edit), // NEU: Reiter für Hinzufügen/Bearbeiten/Löschen
     Settings("Einstellungen", Icons.Filled.Settings)
 }
 
@@ -88,8 +86,8 @@ enum class MainScreen(val label: String, val icon: ImageVector) {
 fun AppRoot(
     darkMode: Boolean,
     onDarkModeChange: (Boolean) -> Unit,
-    language: String,
-    onLanguageChange: (String) -> Unit
+    language: AppLanguage,
+    onLanguageChange: (AppLanguage) -> Unit
 ) {
     // Simulierte Datenhaltung (ersetzbar durch ViewModel/Room)
     var profiles by remember { mutableStateOf(listOf(Profile("Ich"))) }
@@ -110,8 +108,7 @@ fun AppRoot(
                 schedule = DoseSchedule(
                     times = listOf(LocalTime.of(8,0)),
                     recurrenceDays = (0..6).toList()
-                ),
-                inventory = 30
+                )
             )
         )
     ) }
@@ -125,8 +122,8 @@ fun AppRoot(
             NavigationBar {
                 MainScreen.values().forEach { screen ->
                     NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = screen.label) },
-                        label = { Text(screen.label) },
+                        icon = { Icon(screen.icon, contentDescription = tr(screen.label.lowercase(), language)) },
+                        label = { Text(tr(screen.label.lowercase(), language)) },
                         selected = selectedScreen == screen,
                         onClick = { selectedScreen = screen }
                     )
@@ -142,16 +139,18 @@ fun AppRoot(
                         val item = doseItems[idx]
                         val now = LocalTime.now()
                         item.adherenceLog.add(DoseLog(LocalDate.now(), now, status, reason))
-                        if (status == DoseStatus.TAKEN) {
-                            item.inventory = (item.inventory - 1).coerceAtLeast(0)
-                        }
                         doseItems = doseItems.toMutableList()
                     },
+                    language = language
+                )
+                MainScreen.Manage -> DoseManageScreen(
+                    doseItems = doseItems,
                     onEdit = { idx, updated -> doseItems[idx] = updated; doseItems = doseItems.toMutableList() },
                     onDelete = { idx -> doseItems.removeAt(idx); doseItems = doseItems.toMutableList() },
-                    onAdd = { doseItems.add(it); doseItems = doseItems.toMutableList() }
+                    onAdd = { doseItems.add(it); doseItems = doseItems.toMutableList() },
+                    language = language
                 )
-                MainScreen.Calendar -> DoseCalendarScreen(doseItems)
+                MainScreen.Calendar -> DoseCalendarScreen(doseItems, language)
                 MainScreen.Settings -> SettingsScreen(
                     darkMode = darkMode,
                     onDarkModeChange = onDarkModeChange,
@@ -173,24 +172,28 @@ fun AppRoot(
 fun DoseChecklistScreen(
     doseItems: List<DoseItem>,
     onLogIntake: (Int, DoseStatus, String?) -> Unit,
-    onEdit: (Int, DoseItem) -> Unit,
-    onDelete: (Int) -> Unit,
-    onAdd: (DoseItem) -> Unit
+    language: AppLanguage
 ) {
-    var showAddDialog by remember { mutableStateOf(false) }
-    var editIdx by remember { mutableStateOf<Int?>(null) }
-    var deleteIdx by remember { mutableStateOf<Int?>(null) }
-
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Text("Tages-Checkliste", style = MaterialTheme.typography.headlineMedium)
+        Text(tr("checklist", language), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
-        Button(onClick = { showAddDialog = true }) { Text("Neues Medikament/Supplement") }
-        Spacer(Modifier.height(8.dp))
         LazyColumn {
             items(doseItems.withIndex().toList()) { (idx, item) ->
                 val todayLog = item.adherenceLog.findLast { it.date == LocalDate.now() }
                 val checked = todayLog?.status == DoseStatus.TAKEN
-                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .clickable {
+                            // Toggle beim Klick auf das Card-Item
+                            if (checked) {
+                                item.adherenceLog.removeIf { it.date == LocalDate.now() && it.status == DoseStatus.TAKEN }
+                            } else {
+                                onLogIntake(idx, DoseStatus.TAKEN, null)
+                            }
+                        }
+                ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(12.dp)
@@ -201,7 +204,6 @@ fun DoseChecklistScreen(
                                 if (isChecked) {
                                     onLogIntake(idx, DoseStatus.TAKEN, null)
                                 } else {
-                                    // Rückgängig: Entferne heutigen Logeintrag
                                     item.adherenceLog.removeIf { it.date == LocalDate.now() && it.status == DoseStatus.TAKEN }
                                 }
                             }
@@ -209,40 +211,89 @@ fun DoseChecklistScreen(
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text("${item.name} (${item.dosage})", fontWeight = FontWeight.Bold)
-                            Text(if (item.type == DoseType.MEDICATION) "Medikament" else "Supplement")
-                            Text("Inventar: ${item.inventory}")
-                            Text("Zeitplan: " + item.schedule.times.joinToString { it.format(DateTimeFormatter.ofPattern("HH:mm")) })
+                            Text(tr(if (item.type == DoseType.MEDICATION) "medication" else "supplement", language))
+                            Text(tr("schedule", language) + ": " + item.schedule.times.joinToString { it.format(DateTimeFormatter.ofPattern("HH:mm")) })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// NEU: Verwalten-Screen für Hinzufügen/Bearbeiten/Löschen
+@Composable
+fun DoseManageScreen(
+    doseItems: List<DoseItem>,
+    onEdit: (Int, DoseItem) -> Unit,
+    onDelete: (Int) -> Unit,
+    onAdd: (DoseItem) -> Unit,
+    language: AppLanguage
+) {
+    var showAddDialog by remember { mutableStateOf(false) }
+    var editIdx by remember { mutableStateOf<Int?>(null) }
+    var deleteIdx by remember { mutableStateOf<Int?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Text(tr("manage", language), style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        // Großer, breiter Button mit Plus-Icon von links nach rechts
+        Button(
+            onClick = { showAddDialog = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = tr("add", language))
+            Spacer(Modifier.width(12.dp))
+            Text(tr("add", language), style = MaterialTheme.typography.titleMedium)
+        }
+        Spacer(Modifier.height(8.dp))
+        LazyColumn {
+            items(doseItems.withIndex().toList()) { (idx, item) ->
+                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${item.name} (${item.dosage})", fontWeight = FontWeight.Bold)
+                            Text(tr(if (item.type == DoseType.MEDICATION) "medication" else "supplement", language))
+                            Text(tr("schedule", language) + ": " + item.schedule.times.joinToString { it.format(DateTimeFormatter.ofPattern("HH:mm")) })
                         }
                         IconButton(onClick = { editIdx = idx }) {
-                            Icon(Icons.Default.Edit, contentDescription = "Bearbeiten")
+                            Icon(Icons.Default.Edit, contentDescription = tr("edit", language))
                         }
                         Spacer(Modifier.width(8.dp))
-                        Button(onClick = { deleteIdx = idx }) { Text("Löschen") }
+                        // Löschen als Trashcan-Icon
+                        IconButton(onClick = { deleteIdx = idx }) {
+                            Icon(Icons.Default.Delete, contentDescription = tr("delete", language))
+                        }
                     }
                 }
             }
         }
     }
     if (showAddDialog) {
-        DoseEditDialog(onDismiss = { showAddDialog = false }, onSave = { onAdd(it); showAddDialog = false })
+        DoseEditDialog(onDismiss = { showAddDialog = false }, onSave = { onAdd(it); showAddDialog = false }, language = language)
     }
     if (editIdx != null) {
         DoseEditDialog(
             doseItem = doseItems[editIdx!!],
             onDismiss = { editIdx = null },
-            onSave = { onEdit(editIdx!!, it); editIdx = null }
+            onSave = { onEdit(editIdx!!, it); editIdx = null },
+            language = language
         )
     }
     if (deleteIdx != null) {
         AlertDialog(
             onDismissRequest = { deleteIdx = null },
-            title = { Text("Löschen bestätigen") },
-            text = { Text("Wirklich löschen?") },
+            title = { Text(tr("delete_confirm", language)) },
             confirmButton = {
-                Button(onClick = { onDelete(deleteIdx!!); deleteIdx = null }) { Text("Ja") }
+                Button(onClick = { onDelete(deleteIdx!!); deleteIdx = null }) { Text(tr("yes", language)) }
             },
             dismissButton = {
-                Button(onClick = { deleteIdx = null }) { Text("Nein") }
+                Button(onClick = { deleteIdx = null }) { Text(tr("no", language)) }
             }
         )
     }
@@ -253,32 +304,31 @@ fun DoseChecklistScreen(
 fun DoseEditDialog(
     doseItem: DoseItem? = null,
     onDismiss: () -> Unit,
-    onSave: (DoseItem) -> Unit
+    onSave: (DoseItem) -> Unit,
+    language: AppLanguage
 ) {
     var name by remember { mutableStateOf(TextFieldValue(doseItem?.name ?: "")) }
     var dosage by remember { mutableStateOf(TextFieldValue(doseItem?.dosage ?: "")) }
     var type by remember { mutableStateOf(doseItem?.type ?: DoseType.SUPPLEMENT) }
-    var inventory by remember { mutableStateOf(doseItem?.inventory?.toString() ?: "30") }
     var time by remember { mutableStateOf(doseItem?.schedule?.times?.firstOrNull()?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "08:00") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (doseItem == null) "Neues Item" else "Bearbeiten") },
+        title = { Text(if (doseItem == null) tr("add_item", language) else tr("edit_item", language)) },
         text = {
             Column {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") })
-                OutlinedTextField(value = dosage, onValueChange = { dosage = it }, label = { Text("Dosierung") })
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text(tr("name", language)) })
+                OutlinedTextField(value = dosage, onValueChange = { dosage = it }, label = { Text(tr("dose", language)) })
                 Row {
-                    Text("Typ:")
+                    Text(tr("type", language) + ":")
                     Spacer(Modifier.width(8.dp))
                     DropdownMenuBox(
-                        selected = if (type == DoseType.MEDICATION) "Medikament" else "Supplement",
-                        options = listOf("Medikament", "Supplement"),
-                        onSelected = { type = if (it == "Medikament") DoseType.MEDICATION else DoseType.SUPPLEMENT }
+                        selected = tr(if (type == DoseType.MEDICATION) "medication" else "supplement", language),
+                        options = listOf(tr("medication", language), tr("supplement", language)),
+                        onSelected = { type = if (it == tr("medication", language)) DoseType.MEDICATION else DoseType.SUPPLEMENT }
                     )
                 }
-                OutlinedTextField(value = time, onValueChange = { time = it }, label = { Text("Uhrzeit (HH:mm)") })
-                OutlinedTextField(value = inventory, onValueChange = { inventory = it }, label = { Text("Inventar") })
+                OutlinedTextField(value = time, onValueChange = { time = it }, label = { Text(tr("schedule", language) + " (HH:mm)") })
             }
         },
         confirmButton = {
@@ -290,18 +340,17 @@ fun DoseEditDialog(
                     name = name.text,
                     dosage = dosage.text,
                     type = type,
-                    schedule = schedule,
-                    inventory = inventory.toIntOrNull() ?: 0
+                    schedule = schedule
                 ))
-            }) { Text("Speichern") }
+            }) { Text(tr("confirm", language)) }
         },
-        dismissButton = { Button(onClick = onDismiss) { Text("Abbrechen") } }
+        dismissButton = { Button(onClick = onDismiss) { Text(tr("cancel", language)) } }
     )
 }
 
 // Kalender mit Adherence-Score und Detail
 @Composable
-fun DoseCalendarScreen(doseItems: List<DoseItem>) {
+fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
     var viewMode by remember { mutableStateOf("Monat") }
     val today = LocalDate.now()
     var currentMonth by remember { mutableStateOf(today.withDayOfMonth(1)) }
@@ -310,7 +359,7 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>) {
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text("Kalender-Übersicht", style = MaterialTheme.typography.headlineMedium)
+            Text(tr("calendar", language), style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.weight(1f))
             IconButton(onClick = {
                 if (viewMode == "Monat") currentMonth = today.withDayOfMonth(1)
@@ -394,12 +443,12 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>) {
         val totalTaken = doseItems.flatMap { it.adherenceLog }.count { it.status == DoseStatus.TAKEN }
         val totalScheduled = doseItems.flatMap { it.adherenceLog }.size
         val adherence = if (totalScheduled > 0) (totalTaken * 100 / totalScheduled) else 0
-        Text("Adherence: $adherence%", style = MaterialTheme.typography.titleMedium)
+        Text(tr("adherence", language) + ": $adherence%", style = MaterialTheme.typography.titleMedium)
         if (selectedDay != null) {
             val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == selectedDay } }
             AlertDialog(
                 onDismissRequest = { selectedDay = null },
-                title = { Text("Details für ${selectedDay!!.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}") },
+                title = { Text("${tr("details_for", language)} ${selectedDay!!.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}") },
                 text = {
                     Column {
                         logs.forEach {
@@ -418,13 +467,13 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>) {
                                     }
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                Text("${it.time.format(DateTimeFormatter.ofPattern("HH:mm"))}: ${it.status} ${it.reason ?: ""}")
+                                Text("${it.time.format(DateTimeFormatter.ofPattern("HH:mm"))}: ${tr(it.status.name.lowercase(), language)} ${it.reason ?: ""}")
                             }
                         }
-                        if (logs.isEmpty()) Text("Keine Einträge.")
+                        if (logs.isEmpty()) Text(tr("no_entries", language))
                     }
                 },
-                confirmButton = { Button(onClick = { selectedDay = null }) { Text("Schließen") } }
+                confirmButton = { Button(onClick = { selectedDay = null }) { Text(tr("cancel", language)) } }
             )
         }
     }
@@ -715,10 +764,15 @@ fun SettingsScreen(
     onDarkModeChange: (Boolean) -> Unit,
     notificationsEnabled: Boolean,
     onNotificationsChange: (Boolean) -> Unit,
-    language: String,
-    onLanguageChange: (String) -> Unit
+    language: AppLanguage,
+    onLanguageChange: (AppLanguage) -> Unit
 ) {
-    val languages = listOf("Deutsch", "English")
+    val languages = listOf(
+        AppLanguage.EN to "English",
+        AppLanguage.DE to "Deutsch",
+        AppLanguage.ES to "Español",
+        AppLanguage.FR to "Français"
+    )
 
     Column(
         modifier = Modifier
@@ -727,17 +781,14 @@ fun SettingsScreen(
         horizontalAlignment = Alignment.Start,
         verticalArrangement = Arrangement.Top
     ) {
-        Text(
-            if (language == "English") "Settings" else "Einstellungen",
-            style = MaterialTheme.typography.headlineMedium
-        )
+        Text(tr("settings", language), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(24.dp))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (language == "English") "Dark Mode" else "Dark Mode", modifier = Modifier.weight(1f))
+            Text(tr("darkmode", language), modifier = Modifier.weight(1f))
             Switch(
                 checked = darkMode,
                 onCheckedChange = onDarkModeChange
@@ -749,7 +800,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (language == "English") "Notifications" else "Benachrichtigungen", modifier = Modifier.weight(1f))
+            Text(tr("notifications", language), modifier = Modifier.weight(1f))
             Switch(
                 checked = notificationsEnabled,
                 onCheckedChange = onNotificationsChange
@@ -757,11 +808,14 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(16.dp))
 
-        Text(if (language == "English") "Language" else "Sprache")
+        Text(tr("language", language))
         DropdownMenuBox(
-            selected = language,
-            options = languages,
-            onSelected = onLanguageChange
+            selected = languages.first { it.first == language }.second,
+            options = languages.map { it.second },
+            onSelected = { selected ->
+                val lang = languages.firstOrNull { it.second == selected }?.first ?: AppLanguage.EN
+                onLanguageChange(lang)
+            }
         )
         Spacer(Modifier.height(32.dp))
     }
@@ -800,11 +854,167 @@ fun SuppleTrackTheme(
     darkTheme: Boolean,
     content: @Composable () -> Unit
 ) {
-    val colors = if (darkTheme) darkColorScheme() else lightColorScheme()
+    // Optimierte Dark-Theme-Farben für besseren Kontrast
+    val darkColors = darkColorScheme(
+        primary = Color(0xFF90CAF9),
+        onPrimary = Color(0xFF0D47A1),
+        secondary = Color(0xFF80CBC4),
+        onSecondary = Color(0xFF004D40),
+        background = Color(0xFF121212),
+        onBackground = Color(0xFFE0E0E0),
+        surface = Color(0xFF232323),
+        onSurface = Color(0xFFE0E0E0),
+        error = Color(0xFFCF6679),
+        onError = Color(0xFF000000)
+    )
+    val colors = if (darkTheme) darkColors else lightColorScheme()
     MaterialTheme(
         colorScheme = colors,
         content = content
     )
+}
+
+// Sprachschlüssel für Übersetzungen
+enum class AppLanguage(val code: String) {
+    EN("en"), DE("de"), ES("es"), FR("fr")
+}
+
+// Zentrale Übersetzungsfunktion
+fun tr(key: String, lang: AppLanguage): String {
+    return when (lang) {
+        AppLanguage.EN -> when (key) {
+            "settings" -> "Settings"
+            "checklist" -> "Checklist"
+            "calendar" -> "Calendar"
+            "manage" -> "Manage"
+            "add" -> "Add"
+            "edit" -> "Edit"
+            "delete" -> "Delete"
+            "taken" -> "Taken"
+            "skipped" -> "Skipped"
+            "missed" -> "Missed"
+            "medication" -> "Medication"
+            "supplement" -> "Supplement"
+            "dose" -> "Dose"
+            "schedule" -> "Schedule"
+            "today" -> "Today"
+            "language" -> "Language"
+            "darkmode" -> "Dark Mode"
+            "notifications" -> "Notifications"
+            "confirm" -> "Confirm"
+            "cancel" -> "Cancel"
+            "add_item" -> "Add Item"
+            "edit_item" -> "Edit Item"
+            "delete_confirm" -> "Really delete?"
+            "yes" -> "Yes"
+            "no" -> "No"
+            "export" -> "Export"
+            "profile" -> "Profile"
+            "new_profile" -> "New Profile"
+            "adherence" -> "Adherence"
+            "details_for" -> "Details for"
+            else -> key
+        }
+        AppLanguage.DE -> when (key) {
+            "settings" -> "Einstellungen"
+            "checklist" -> "Checkliste"
+            "calendar" -> "Kalender"
+            "manage" -> "Verwalten"
+            "add" -> "Hinzufügen"
+            "edit" -> "Bearbeiten"
+            "delete" -> "Löschen"
+            "taken" -> "Genommen"
+            "skipped" -> "Übersprungen"
+            "missed" -> "Verpasst"
+            "medication" -> "Medikament"
+            "supplement" -> "Supplement"
+            "dose" -> "Dosierung"
+            "schedule" -> "Zeitplan"
+            "today" -> "Heute"
+            "language" -> "Sprache"
+            "darkmode" -> "Dark Mode"
+            "notifications" -> "Benachrichtigungen"
+            "confirm" -> "Bestätigen"
+            "cancel" -> "Abbrechen"
+            "add_item" -> "Neues Item"
+            "edit_item" -> "Bearbeiten"
+            "delete_confirm" -> "Wirklich löschen?"
+            "yes" -> "Ja"
+            "no" -> "Nein"
+            "export" -> "Export"
+            "profile" -> "Profil"
+            "new_profile" -> "Neues Profil"
+            "adherence" -> "Adherence"
+            "details_for" -> "Details für"
+            else -> key
+        }
+        AppLanguage.ES -> when (key) {
+            "settings" -> "Configuración"
+            "checklist" -> "Lista"
+            "calendar" -> "Calendario"
+            "manage" -> "Gestionar"
+            "add" -> "Añadir"
+            "edit" -> "Editar"
+            "delete" -> "Eliminar"
+            "taken" -> "Tomado"
+            "skipped" -> "Saltado"
+            "missed" -> "Perdido"
+            "medication" -> "Medicamento"
+            "supplement" -> "Suplemento"
+            "dose" -> "Dosis"
+            "schedule" -> "Horario"
+            "today" -> "Hoy"
+            "language" -> "Idioma"
+            "darkmode" -> "Modo oscuro"
+            "notifications" -> "Notificaciones"
+            "confirm" -> "Confirmar"
+            "cancel" -> "Cancelar"
+            "add_item" -> "Añadir elemento"
+            "edit_item" -> "Editar elemento"
+            "delete_confirm" -> "¿Eliminar realmente?"
+            "yes" -> "Sí"
+            "no" -> "No"
+            "export" -> "Exportar"
+            "profile" -> "Perfil"
+            "new_profile" -> "Nuevo perfil"
+            "adherence" -> "Adherencia"
+            "details_for" -> "Detalles para"
+            else -> key
+        }
+        AppLanguage.FR -> when (key) {
+            "settings" -> "Paramètres"
+            "checklist" -> "Liste"
+            "calendar" -> "Calendrier"
+            "manage" -> "Gérer"
+            "add" -> "Ajouter"
+            "edit" -> "Modifier"
+            "delete" -> "Supprimer"
+            "taken" -> "Pris"
+            "skipped" -> "Sauté"
+            "missed" -> "Manqué"
+            "medication" -> "Médicament"
+            "supplement" -> "Supplément"
+            "dose" -> "Dose"
+            "schedule" -> "Horaire"
+            "today" -> "Aujourd'hui"
+            "language" -> "Langue"
+            "darkmode" -> "Mode sombre"
+            "notifications" -> "Notifications"
+            "confirm" -> "Confirmer"
+            "cancel" -> "Annuler"
+            "add_item" -> "Ajouter un élément"
+            "edit_item" -> "Modifier l'élément"
+            "delete_confirm" -> "Vraiment supprimer?"
+            "yes" -> "Oui"
+            "no" -> "Non"
+            "export" -> "Exporter"
+            "profile" -> "Profil"
+            "new_profile" -> "Nouveau profil"
+            "adherence" -> "Adhérence"
+            "details_for" -> "Détails pour"
+            else -> key
+        }
+    }
 }
 
 // Ersetze die fehlerhafte SegmentedButton-Funktion durch diese eigene Implementierung:

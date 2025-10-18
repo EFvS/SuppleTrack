@@ -15,6 +15,7 @@ It supports reminders, intake history, daily checklists, calendar, multi-profile
 - **Kalender-Übersicht:** Visualisierung der Einnahmehistorie, Detailansicht pro Tag.
 - **Adherence-Score:** Prozentuale Anzeige der Einnahme-Quote pro Woche/Monat.
 - **Export:** CSV/JSON-Export der Adherence-Daten für beliebigen Zeitraum.
+- **Verwalten-Reiter:** Hinzufügen, Bearbeiten und Löschen von Medikamenten/Supplements erfolgt in einem eigenen Tab.
 - **Multiple profiles:** Track intake for yourself and family.
 - **Flexible reminders:** Actionable notifications; cross off from lock screen.
 - **As-needed tracking:** Log intakes even when not scheduled.
