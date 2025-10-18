@@ -20,8 +20,38 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+
+enum class DoseType { MEDICATION, SUPPLEMENT }
+enum class DoseStatus { TAKEN, SKIPPED, MISSED }
+
+data class DoseSchedule(
+    val times: List<LocalTime> = listOf(LocalTime.of(8,0)),
+    val recurrenceDays: List<Int> = (0..6).toList(), // 0=Montag
+    val durationDays: Int? = null // z.B. 7 Tage
+)
+
+// RefillThreshold entfernt aus DoseItem
+data class DoseItem(
+    val id: Int,
+    var name: String,
+    var dosage: String,
+    var type: DoseType,
+    var schedule: DoseSchedule,
+    var inventory: Int,
+    var adherenceLog: MutableList<DoseLog> = mutableListOf()
+)
+
+data class DoseLog(
+    val date: LocalDate,
+    val time: LocalTime,
+    val status: DoseStatus,
+    val reason: String? = null
+)
 
 data class Profile(val name: String)
 data class Supplement(val name: String, var taken: Boolean = false)
@@ -70,10 +100,26 @@ fun AppRoot(
         )
     )}
     var intakeHistory by remember { mutableStateOf(listOf<IntakeHistory>()) }
+    var doseItems by remember { mutableStateOf(
+        mutableListOf(
+            DoseItem(
+                id = 1,
+                name = "Creatin",
+                dosage = "3 g",
+                type = DoseType.SUPPLEMENT,
+                schedule = DoseSchedule(
+                    times = listOf(LocalTime.of(8,0)),
+                    recurrenceDays = (0..6).toList()
+                ),
+                inventory = 30
+            )
+        )
+    ) }
     var selectedScreen by remember { mutableStateOf(MainScreen.Checklist) }
-    var notificationsEnabled by remember { mutableStateOf(true) }
+    var exportDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
+    // Refill-Benachrichtigung entfernt
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -90,98 +136,371 @@ fun AppRoot(
     ) { innerPadding ->
         Box(modifier = Modifier.padding(innerPadding)) {
             when (selectedScreen) {
-                MainScreen.Checklist -> ChecklistScreen(
-                    supplements = supplements,
-                    onToggle = { idx, checked ->
-                        supplements = supplements.mapIndexed { i, s ->
-                            if (i == idx) s.copy(taken = checked) else s
+                MainScreen.Checklist -> DoseChecklistScreen(
+                    doseItems = doseItems,
+                    onLogIntake = { idx, status, reason ->
+                        val item = doseItems[idx]
+                        val now = LocalTime.now()
+                        item.adherenceLog.add(DoseLog(LocalDate.now(), now, status, reason))
+                        if (status == DoseStatus.TAKEN) {
+                            item.inventory = (item.inventory - 1).coerceAtLeast(0)
                         }
-                        intakeHistory = intakeHistory + IntakeHistory(
-                            LocalDate.now(),
-                            supplements[idx].name,
-                            checked
-                        )
+                        doseItems = doseItems.toMutableList()
                     },
-                    profile = selectedProfile
+                    onEdit = { idx, updated -> doseItems[idx] = updated; doseItems = doseItems.toMutableList() },
+                    onDelete = { idx -> doseItems.removeAt(idx); doseItems = doseItems.toMutableList() },
+                    onAdd = { doseItems.add(it); doseItems = doseItems.toMutableList() }
                 )
-                MainScreen.Calendar -> CalendarScreen(intakeHistory)
-                /*
-                MainScreen.Profiles -> ProfilesScreen(
-                    profiles = profiles,
-                    selected = selectedProfile,
-                    onSelect = { selectedProfile = it },
-                    onAdd = { name ->
-                        if (name.isNotBlank() && profiles.none { it.name == name }) {
-                            profiles = profiles + Profile(name)
-                        }
-                    },
-                    onDelete = { profile ->
-                        if (profiles.size > 1) {
-                            profiles = profiles.filter { it != profile }
-                            if (selectedProfile == profile) selectedProfile = profiles.first()
-                        }
-                    }
-                )
-
-                MainScreen.Export -> ExportScreen {
-                    Toast.makeText(context, "Exportiert (Demo)", Toast.LENGTH_SHORT).show()
-                }
-                MainScreen.Widget -> WidgetScreen()
-                 */
+                MainScreen.Calendar -> DoseCalendarScreen(doseItems)
                 MainScreen.Settings -> SettingsScreen(
                     darkMode = darkMode,
                     onDarkModeChange = onDarkModeChange,
-                    notificationsEnabled = notificationsEnabled,
-                    onNotificationsChange = {
-                        notificationsEnabled = it
-                        Toast.makeText(
-                            context,
-                            if (it) "Benachrichtigungen aktiviert" else "Benachrichtigungen deaktiviert",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
+                    notificationsEnabled = true,
+                    onNotificationsChange = {},
                     language = language,
                     onLanguageChange = onLanguageChange
                 )
+            }
+            if (exportDialog) {
+                ExportDialog(doseItems = doseItems, onDismiss = { exportDialog = false })
             }
         }
     }
 }
 
+// Übersicht mit Checkbox für "genommen" und Rückgängig
 @Composable
-fun ChecklistScreen(
-    supplements: List<Supplement>,
-    onToggle: (Int, Boolean) -> Unit,
-    profile: Profile
+fun DoseChecklistScreen(
+    doseItems: List<DoseItem>,
+    onLogIntake: (Int, DoseStatus, String?) -> Unit,
+    onEdit: (Int, DoseItem) -> Unit,
+    onDelete: (Int) -> Unit,
+    onAdd: (DoseItem) -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp)
-    ) {
-        Text("Tages-Checkliste für ${profile.name}", style = MaterialTheme.typography.headlineMedium)
+    var showAddDialog by remember { mutableStateOf(false) }
+    var editIdx by remember { mutableStateOf<Int?>(null) }
+    var deleteIdx by remember { mutableStateOf<Int?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Text("Tages-Checkliste", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
-        if (supplements.isEmpty()) {
-            Text("Keine Supplements/Medikamente hinterlegt.")
-        } else {
-            LazyColumn {
-                items(supplements.withIndex().toList()) { (idx, supp) ->
+        Button(onClick = { showAddDialog = true }) { Text("Neues Medikament/Supplement") }
+        Spacer(Modifier.height(8.dp))
+        LazyColumn {
+            items(doseItems.withIndex().toList()) { (idx, item) ->
+                val todayLog = item.adherenceLog.findLast { it.date == LocalDate.now() }
+                val checked = todayLog?.status == DoseStatus.TAKEN
+                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
+                        modifier = Modifier.padding(12.dp)
                     ) {
                         Checkbox(
-                            checked = supp.taken,
-                            onCheckedChange = { onToggle(idx, it) }
+                            checked = checked,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked) {
+                                    onLogIntake(idx, DoseStatus.TAKEN, null)
+                                } else {
+                                    // Rückgängig: Entferne heutigen Logeintrag
+                                    item.adherenceLog.removeIf { it.date == LocalDate.now() && it.status == DoseStatus.TAKEN }
+                                }
+                            }
                         )
-                        Text(supp.name, fontWeight = if (supp.taken) FontWeight.Bold else FontWeight.Normal)
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${item.name} (${item.dosage})", fontWeight = FontWeight.Bold)
+                            Text(if (item.type == DoseType.MEDICATION) "Medikament" else "Supplement")
+                            Text("Inventar: ${item.inventory}")
+                            Text("Zeitplan: " + item.schedule.times.joinToString { it.format(DateTimeFormatter.ofPattern("HH:mm")) })
+                        }
+                        IconButton(onClick = { editIdx = idx }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Bearbeiten")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = { deleteIdx = idx }) { Text("Löschen") }
                     }
                 }
             }
         }
     }
+    if (showAddDialog) {
+        DoseEditDialog(onDismiss = { showAddDialog = false }, onSave = { onAdd(it); showAddDialog = false })
+    }
+    if (editIdx != null) {
+        DoseEditDialog(
+            doseItem = doseItems[editIdx!!],
+            onDismiss = { editIdx = null },
+            onSave = { onEdit(editIdx!!, it); editIdx = null }
+        )
+    }
+    if (deleteIdx != null) {
+        AlertDialog(
+            onDismissRequest = { deleteIdx = null },
+            title = { Text("Löschen bestätigen") },
+            text = { Text("Wirklich löschen?") },
+            confirmButton = {
+                Button(onClick = { onDelete(deleteIdx!!); deleteIdx = null }) { Text("Ja") }
+            },
+            dismissButton = {
+                Button(onClick = { deleteIdx = null }) { Text("Nein") }
+            }
+        )
+    }
+}
+
+// Dialog für Hinzufügen/Bearbeiten (RefillThreshold entfernt)
+@Composable
+fun DoseEditDialog(
+    doseItem: DoseItem? = null,
+    onDismiss: () -> Unit,
+    onSave: (DoseItem) -> Unit
+) {
+    var name by remember { mutableStateOf(TextFieldValue(doseItem?.name ?: "")) }
+    var dosage by remember { mutableStateOf(TextFieldValue(doseItem?.dosage ?: "")) }
+    var type by remember { mutableStateOf(doseItem?.type ?: DoseType.SUPPLEMENT) }
+    var inventory by remember { mutableStateOf(doseItem?.inventory?.toString() ?: "30") }
+    var time by remember { mutableStateOf(doseItem?.schedule?.times?.firstOrNull()?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "08:00") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (doseItem == null) "Neues Item" else "Bearbeiten") },
+        text = {
+            Column {
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") })
+                OutlinedTextField(value = dosage, onValueChange = { dosage = it }, label = { Text("Dosierung") })
+                Row {
+                    Text("Typ:")
+                    Spacer(Modifier.width(8.dp))
+                    DropdownMenuBox(
+                        selected = if (type == DoseType.MEDICATION) "Medikament" else "Supplement",
+                        options = listOf("Medikament", "Supplement"),
+                        onSelected = { type = if (it == "Medikament") DoseType.MEDICATION else DoseType.SUPPLEMENT }
+                    )
+                }
+                OutlinedTextField(value = time, onValueChange = { time = it }, label = { Text("Uhrzeit (HH:mm)") })
+                OutlinedTextField(value = inventory, onValueChange = { inventory = it }, label = { Text("Inventar") })
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val id = doseItem?.id ?: (0..100000).random()
+                val schedule = DoseSchedule(times = listOf(LocalTime.parse(time)))
+                onSave(DoseItem(
+                    id = id,
+                    name = name.text,
+                    dosage = dosage.text,
+                    type = type,
+                    schedule = schedule,
+                    inventory = inventory.toIntOrNull() ?: 0
+                ))
+            }) { Text("Speichern") }
+        },
+        dismissButton = { Button(onClick = onDismiss) { Text("Abbrechen") } }
+    )
+}
+
+// Kalender mit Adherence-Score und Detail
+@Composable
+fun DoseCalendarScreen(doseItems: List<DoseItem>) {
+    var viewMode by remember { mutableStateOf("Monat") } // "Woche" oder "Monat"
+    val today = LocalDate.now()
+    var currentMonth by remember { mutableStateOf(today.withDayOfMonth(1)) }
+    var currentWeekStart by remember { mutableStateOf(today.with(java.time.DayOfWeek.MONDAY)) }
+    var selectedDay by remember { mutableStateOf<LocalDate?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Text("Kalender-Übersicht", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Ansicht:")
+            Spacer(Modifier.width(8.dp))
+            SegmentedButton(
+                options = listOf("Woche", "Monat"),
+                selected = viewMode,
+                onSelected = { viewMode = it }
+            )
+            Spacer(Modifier.weight(1f))
+            if (viewMode == "Monat") {
+                IconButton(onClick = { currentMonth = currentMonth.minusMonths(1) }) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Vorheriger Monat")
+                }
+                Text(currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")))
+                IconButton(onClick = { currentMonth = currentMonth.plusMonths(1) }) {
+                    Icon(Icons.Default.ArrowForward, contentDescription = "Nächster Monat")
+                }
+            } else {
+                IconButton(onClick = { currentWeekStart = currentWeekStart.minusWeeks(1) }) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Vorherige Woche")
+                }
+                val weekEnd = currentWeekStart.plusDays(6)
+                Text("${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}")
+                IconButton(onClick = { currentWeekStart = currentWeekStart.plusWeeks(1) }) {
+                    Icon(Icons.Default.ArrowForward, contentDescription = "Nächste Woche")
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        if (viewMode == "Monat") {
+            MonthCalendar(
+                monthStart = currentMonth,
+                doseItems = doseItems,
+                onDayClick = { selectedDay = it }
+            )
+        } else {
+            WeekCalendar(
+                weekStart = currentWeekStart,
+                doseItems = doseItems,
+                onDayClick = { selectedDay = it }
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Grün: alles genommen, Gelb: teilweise, Rot: nichts, Grau: keine Einträge")
+        Spacer(Modifier.height(16.dp))
+        val totalTaken = doseItems.flatMap { it.adherenceLog }.count { it.status == DoseStatus.TAKEN }
+        val totalScheduled = doseItems.flatMap { it.adherenceLog }.size
+        val adherence = if (totalScheduled > 0) (totalTaken * 100 / totalScheduled) else 0
+        Text("Adherence: $adherence%")
+        if (selectedDay != null) {
+            val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == selectedDay } }
+            AlertDialog(
+                onDismissRequest = { selectedDay = null },
+                title = { Text("Details für ${selectedDay!!.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}") },
+                text = {
+                    Column {
+                        logs.forEach {
+                            Text("${it.time.format(DateTimeFormatter.ofPattern("HH:mm"))}: ${it.status} ${it.reason ?: ""}")
+                        }
+                        if (logs.isEmpty()) Text("Keine Einträge.")
+                    }
+                },
+                confirmButton = { Button(onClick = { selectedDay = null }) { Text("Schließen") } }
+            )
+        }
+    }
+}
+
+// Segmented Button für Wochen-/Monatswahl
+@Composable
+fun SegmentedButton(options: List<String>, selected: String, onSelected: (String) -> Unit) {
+    Row {
+        options.forEach { option ->
+            val selectedColor = if (option == selected) MaterialTheme.colorScheme.primary else Color.LightGray
+            Button(
+                onClick = { onSelected(option) },
+                colors = ButtonDefaults.buttonColors(containerColor = selectedColor),
+                modifier = Modifier.padding(end = 4.dp)
+            ) {
+                Text(option)
+            }
+        }
+    }
+}
+
+// Monatsansicht: 6x7 Grid
+@Composable
+fun MonthCalendar(
+    monthStart: LocalDate,
+    doseItems: List<DoseItem>,
+    onDayClick: (LocalDate) -> Unit
+) {
+    val firstDayOfWeek = java.time.DayOfWeek.MONDAY
+    val daysInMonth = monthStart.lengthOfMonth()
+    val firstDay = monthStart
+    val firstWeekDay = firstDay.dayOfWeek.value % 7 // Montag=1
+    val gridDays = mutableListOf<LocalDate?>()
+    for (i in 1..firstWeekDay) gridDays.add(null)
+    for (i in 0 until daysInMonth) gridDays.add(firstDay.plusDays(i.toLong()))
+    while (gridDays.size % 7 != 0) gridDays.add(null)
+    Column {
+        Row {
+            listOf("Mo","Di","Mi","Do","Fr","Sa","So").forEach {
+                Text(it, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+            }
+        }
+        for (week in gridDays.chunked(7)) {
+            Row {
+                week.forEach { day ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .padding(2.dp)
+                            .background(
+                                day?.let {
+                                    val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } }
+                                    val taken = logs.count { it.status == DoseStatus.TAKEN }
+                                    val total = logs.size
+                                    when {
+                                        total == 0 -> Color.LightGray
+                                        taken == total -> Color(0xFF81C784)
+                                        taken > 0 -> Color(0xFFFFF176)
+                                        else -> Color(0xFFE57373)
+                                    }
+                                } ?: Color.Transparent
+                            )
+                            .clickable(enabled = day != null) { day?.let { onDayClick(it) } },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (day != null) Text(day.dayOfMonth.toString())
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Wochenansicht: 1x7
+@Composable
+fun WeekCalendar(
+    weekStart: LocalDate,
+    doseItems: List<DoseItem>,
+    onDayClick: (LocalDate) -> Unit
+) {
+    val days = (0..6).map { weekStart.plusDays(it.toLong()) }
+    Row {
+        days.forEach { day ->
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .aspectRatio(0.8f)
+                    .padding(2.dp)
+                    .background(
+                        run {
+                            val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } }
+                            val taken = logs.count { it.status == DoseStatus.TAKEN }
+                            val total = logs.size
+                            when {
+                                total == 0 -> Color.LightGray
+                                taken == total -> Color(0xFF81C784)
+                                taken > 0 -> Color(0xFFFFF176)
+                                else -> Color(0xFFE57373)
+                            }
+                        }
+                    )
+                    .clickable { onDayClick(day) },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(day.dayOfWeek.name.take(2), fontWeight = FontWeight.Bold)
+                Text(day.dayOfMonth.toString())
+            }
+        }
+    }
+}
+
+// Exportfunktion (Demo)
+@Composable
+fun ExportDialog(doseItems: List<DoseItem>, onDismiss: () -> Unit) {
+    val csv = doseItems.flatMap { item ->
+        item.adherenceLog.map {
+            "${item.name},${item.dosage},${item.type},${it.date},${it.time},${it.status},${it.reason ?: ""}"
+        }
+    }.joinToString("\n")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Export (CSV)") },
+        text = { Text(csv.ifBlank { "Keine Daten." }) },
+        confirmButton = { Button(onClick = onDismiss) { Text("Schließen") } }
+    )
 }
 
 @Composable
@@ -370,12 +689,6 @@ fun SettingsScreen(
             onSelected = onLanguageChange
         )
         Spacer(Modifier.height(32.dp))
-        Text(
-            if (language == "English")
-                "Adjust notifications, accessibility, language and more."
-            else
-                "Passe Benachrichtigungen, Barrierefreiheit, Sprache und mehr an."
-        )
     }
 }
 

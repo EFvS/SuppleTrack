@@ -7,6 +7,14 @@ It supports reminders, intake history, daily checklists, calendar, multi-profile
 
 ## Features
 
+- **Medikament/Supplement-Tracker:** Verwalte alle Einnahmen als DoseItem (Name, Dosierung, Typ, Zeitplan, Inventar, Adherence-Log).
+- **Inventar & Refill:** Pillenzähler, automatische Abzüge, Warnung bei niedrigem Bestand.
+- **Flexible Zeitpläne:** Tägliche, mehrtägige, Wochentage, Intervall, temporäre Einnahme.
+- **Erinnerungen:** Push-Benachrichtigungen mit Aktionen (Genommen, Überspringen, Snooze).
+- **Adherence-Log:** Status (Genommen, Übersprungen, Verpasst) mit Zeitstempel und Grund.
+- **Kalender-Übersicht:** Visualisierung der Einnahmehistorie, Detailansicht pro Tag.
+- **Adherence-Score:** Prozentuale Anzeige der Einnahme-Quote pro Woche/Monat.
+- **Export:** CSV/JSON-Export der Adherence-Daten für beliebigen Zeitraum.
 - **Multiple profiles:** Track intake for yourself and family.
 - **Flexible reminders:** Actionable notifications; cross off from lock screen.
 - **As-needed tracking:** Log intakes even when not scheduled.
