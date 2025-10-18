@@ -31,8 +31,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            SuppleTrackTheme {
-                AppRoot()
+            var darkMode by remember { mutableStateOf(false) }
+            var language by remember { mutableStateOf("Deutsch") }
+            SuppleTrackTheme(darkMode) {
+                AppRoot(
+                    darkMode = darkMode,
+                    onDarkModeChange = { darkMode = it },
+                    language = language,
+                    onLanguageChange = { language = it }
+                )
             }
         }
     }
@@ -41,14 +48,19 @@ class MainActivity : ComponentActivity() {
 enum class MainScreen(val label: String, val icon: ImageVector) {
     Checklist("Checkliste", Icons.AutoMirrored.Filled.List), // Icons.Filled.Checklist ersetzt durch List
     Calendar("Kalender", Icons.Filled.DateRange),
-    Profiles("Profile", Icons.Filled.Person),
+    //Profiles("Profile", Icons.Filled.Person),
     //Export("Export/Backup", Icons.Filled.Warning),
     //Widget("Widget", Icons.Filled.AddCircle),
     Settings("Einstellungen", Icons.Filled.Settings)
 }
 
 @Composable
-fun AppRoot() {
+fun AppRoot(
+    darkMode: Boolean,
+    onDarkModeChange: (Boolean) -> Unit,
+    language: String,
+    onLanguageChange: (String) -> Unit
+) {
     // Simulierte Datenhaltung (ersetzbar durch ViewModel/Room)
     var profiles by remember { mutableStateOf(listOf(Profile("Ich"))) }
     var selectedProfile by remember { mutableStateOf(profiles.first()) }
@@ -59,6 +71,7 @@ fun AppRoot() {
     )}
     var intakeHistory by remember { mutableStateOf(listOf<IntakeHistory>()) }
     var selectedScreen by remember { mutableStateOf(MainScreen.Checklist) }
+    var notificationsEnabled by remember { mutableStateOf(true) }
     val context = LocalContext.current
 
     Scaffold(
@@ -92,6 +105,7 @@ fun AppRoot() {
                     profile = selectedProfile
                 )
                 MainScreen.Calendar -> CalendarScreen(intakeHistory)
+                /*
                 MainScreen.Profiles -> ProfilesScreen(
                     profiles = profiles,
                     selected = selectedProfile,
@@ -108,13 +122,27 @@ fun AppRoot() {
                         }
                     }
                 )
-                /*
+
                 MainScreen.Export -> ExportScreen {
                     Toast.makeText(context, "Exportiert (Demo)", Toast.LENGTH_SHORT).show()
                 }
                 MainScreen.Widget -> WidgetScreen()
                  */
-                MainScreen.Settings -> SettingsScreen()
+                MainScreen.Settings -> SettingsScreen(
+                    darkMode = darkMode,
+                    onDarkModeChange = onDarkModeChange,
+                    notificationsEnabled = notificationsEnabled,
+                    onNotificationsChange = {
+                        notificationsEnabled = it
+                        Toast.makeText(
+                            context,
+                            if (it) "Benachrichtigungen aktiviert" else "Benachrichtigungen deaktiviert",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    language = language,
+                    onLanguageChange = onLanguageChange
+                )
             }
         }
     }
@@ -288,10 +316,14 @@ fun WidgetScreen() {
 }
 
 @Composable
-fun SettingsScreen() {
-    var darkMode by remember { mutableStateOf(false) }
-    var notificationsEnabled by remember { mutableStateOf(true) }
-    var language by remember { mutableStateOf("Deutsch") }
+fun SettingsScreen(
+    darkMode: Boolean,
+    onDarkModeChange: (Boolean) -> Unit,
+    notificationsEnabled: Boolean,
+    onNotificationsChange: (Boolean) -> Unit,
+    language: String,
+    onLanguageChange: (String) -> Unit
+) {
     val languages = listOf("Deutsch", "English")
 
     Column(
@@ -301,17 +333,20 @@ fun SettingsScreen() {
         horizontalAlignment = Alignment.Start,
         verticalArrangement = Arrangement.Top
     ) {
-        Text("Einstellungen", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            if (language == "English") "Settings" else "Einstellungen",
+            style = MaterialTheme.typography.headlineMedium
+        )
         Spacer(Modifier.height(24.dp))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Dark Mode", modifier = Modifier.weight(1f))
+            Text(if (language == "English") "Dark Mode" else "Dark Mode", modifier = Modifier.weight(1f))
             Switch(
                 checked = darkMode,
-                onCheckedChange = { darkMode = it }
+                onCheckedChange = onDarkModeChange
             )
         }
         Spacer(Modifier.height(16.dp))
@@ -320,22 +355,27 @@ fun SettingsScreen() {
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Benachrichtigungen", modifier = Modifier.weight(1f))
+            Text(if (language == "English") "Notifications" else "Benachrichtigungen", modifier = Modifier.weight(1f))
             Switch(
                 checked = notificationsEnabled,
-                onCheckedChange = { notificationsEnabled = it }
+                onCheckedChange = onNotificationsChange
             )
         }
         Spacer(Modifier.height(16.dp))
 
-        Text("Sprache")
+        Text(if (language == "English") "Language" else "Sprache")
         DropdownMenuBox(
             selected = language,
             options = languages,
-            onSelected = { language = it }
+            onSelected = onLanguageChange
         )
         Spacer(Modifier.height(32.dp))
-        Text("Passe Benachrichtigungen, Barrierefreiheit, Sprache und mehr an.")
+        Text(
+            if (language == "English")
+                "Adjust notifications, accessibility, language and more."
+            else
+                "Passe Benachrichtigungen, Barrierefreiheit, Sprache und mehr an."
+        )
     }
 }
 
@@ -368,9 +408,13 @@ fun DropdownMenuBox(
 }
 
 @Composable
-fun SuppleTrackTheme(content: @Composable () -> Unit) {
+fun SuppleTrackTheme(
+    darkTheme: Boolean,
+    content: @Composable () -> Unit
+) {
+    val colors = if (darkTheme) darkColorScheme() else lightColorScheme()
     MaterialTheme(
-        colorScheme = lightColorScheme(),
+        colorScheme = colors,
         content = content
     )
 }
