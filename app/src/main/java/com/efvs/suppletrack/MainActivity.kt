@@ -358,61 +358,62 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
     var selectedDay by remember { mutableStateOf<LocalDate?>(null) }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text(tr("calendar", language), style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = {
-                if (viewMode == "Monat") currentMonth = today.withDayOfMonth(1)
-                else currentWeekStart = today.with(java.time.DayOfWeek.MONDAY)
-            }) {
-                Icon(Icons.Default.Star, contentDescription = "Gehe zu heute")
-            }
-        }
+        Text(tr("calendar", language), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Ansicht:", fontWeight = FontWeight.Medium)
-            Spacer(Modifier.width(8.dp))
-            SegmentedButton(
-                options = listOf("Woche", "Monat"),
-                selected = viewMode,
-                onSelected = { viewMode = it }
-            )
-        }
-        Spacer(Modifier.height(12.dp))
+        // Erste Zeile: Intervall-Slider links, Navigation rechts
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            // Navigation in eigene Spalte
-            Column {
-                IconButton(onClick = {
-                    if (viewMode == "Monat") currentMonth = currentMonth.minusMonths(1)
-                    else currentWeekStart = currentWeekStart.minusWeeks(1)
-                }) {
-                    Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Zurück")
-                }
-                IconButton(onClick = {
-                    if (viewMode == "Monat") currentMonth = currentMonth.plusMonths(1)
-                    else currentWeekStart = currentWeekStart.plusWeeks(1)
-                }) {
-                    Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Vor")
-                }
+            // Intervall-Slider (Woche/Monat) in der ersten Spalte
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                SegmentedButton(
+                    options = listOf("Woche", "Monat"),
+                    selected = viewMode,
+                    onSelected = { viewMode = it }
+                )
             }
-            Spacer(Modifier.width(8.dp))
-            if (viewMode == "Monat") {
-                Text(
-                    currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")),
-                    style = MaterialTheme.typography.titleLarge
-                )
-            } else {
-                val weekEnd = currentWeekStart.plusDays(6)
-                Text(
-                    "${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}",
-                    style = MaterialTheme.typography.titleLarge
-                )
+            // Navigation (Zurück, Text, Weiter) in der zweiten Spalte
+            Box(modifier = Modifier.weight(2f), contentAlignment = Alignment.Center) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    IconButton(onClick = {
+                        if (viewMode == "Monat") currentMonth = currentMonth.minusMonths(1)
+                        else currentWeekStart = currentWeekStart.minusWeeks(1)
+                    }) {
+                        Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Zurück")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    if (viewMode == "Monat") {
+                        Text(
+                            currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")),
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1
+                        )
+                    } else {
+                        val weekEnd = currentWeekStart.plusDays(6)
+                        Text(
+                            "${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = {
+                        if (viewMode == "Monat") currentMonth = currentMonth.plusMonths(1)
+                        else currentWeekStart = currentWeekStart.plusWeeks(1)
+                    }) {
+                        Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Vor")
+                    }
+                }
             }
         }
         Spacer(Modifier.height(16.dp))
+        // Kalender
         if (viewMode == "Monat") {
             MonthCalendar(
                 monthStart = currentMonth,
@@ -427,6 +428,19 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
                 today = today,
                 onDayClick = { selectedDay = it }
             )
+        }
+        Spacer(Modifier.height(16.dp))
+        // "Auf heute springen" Button
+        Button(
+            onClick = {
+                if (viewMode == "Monat") currentMonth = today.withDayOfMonth(1)
+                else currentWeekStart = today.with(java.time.DayOfWeek.MONDAY)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Star, contentDescription = "Heute")
+            Spacer(Modifier.width(8.dp))
+            Text(tr("today", language))
         }
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -479,7 +493,7 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
     }
 }
 
-// Monatsansicht mit Hervorhebung heute und Tooltip
+// Monatsansicht mit optimierten Farben für Dark Mode und grünem "Heute" bei vollständiger Einnahme
 @Composable
 fun MonthCalendar(
     monthStart: LocalDate,
@@ -494,6 +508,11 @@ fun MonthCalendar(
     for (i in 1..firstWeekDay) gridDays.add(null)
     for (i in 0 until daysInMonth) gridDays.add(firstDay.plusDays(i.toLong()))
     while (gridDays.size % 7 != 0) gridDays.add(null)
+    val darkTakenColor = Color(0xFF43A047) // kräftiges Grün für Dark Mode
+    val darkPartialColor = Color(0xFFFFC107) // kräftiges Gelb
+    val darkMissedColor = Color(0xFFD32F2F) // kräftiges Rot
+    val darkEmptyColor = Color(0xFF424242) // dunkles Grau
+
     Column {
         Row {
             listOf("Mo","Di","Mi","Do","Fr","Sa","So").forEach {
@@ -507,11 +526,12 @@ fun MonthCalendar(
                     val logs = day?.let { doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } } } ?: emptyList()
                     val taken = logs.count { it.status == DoseStatus.TAKEN }
                     val total = logs.size
+                    val allTakenToday = isToday && total > 0 && taken == total
                     val color = when {
-                        total == 0 -> Color.LightGray
-                        taken == total -> Color(0xFF81C784)
-                        taken > 0 -> Color(0xFFFFF176)
-                        else -> Color(0xFFE57373)
+                        total == 0 -> darkEmptyColor
+                        taken == total -> if (isToday) darkTakenColor else darkTakenColor
+                        taken > 0 -> darkPartialColor
+                        else -> darkMissedColor
                     }
                     Box(
                         modifier = Modifier
@@ -519,8 +539,11 @@ fun MonthCalendar(
                             .aspectRatio(1f)
                             .padding(4.dp)
                             .background(
-                                if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                                else color
+                                when {
+                                    allTakenToday -> darkTakenColor // heute alles genommen: grün
+                                    isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                    else -> color
+                                }
                             )
                             .clickable(enabled = day != null) { day?.let { onDayClick(it) } },
                         contentAlignment = Alignment.Center
@@ -538,9 +561,9 @@ fun MonthCalendar(
                                         },
                                         contentDescription = null,
                                         tint = when {
-                                            taken == total -> Color(0xFF81C784)
-                                            taken > 0 -> Color(0xFFFFF176)
-                                            else -> Color(0xFFE57373)
+                                            taken == total -> darkTakenColor
+                                            taken > 0 -> darkPartialColor
+                                            else -> darkMissedColor
                                         },
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -554,7 +577,7 @@ fun MonthCalendar(
     }
 }
 
-// Wochenansicht mit Hervorhebung heute und Tooltip
+// Wochenansicht mit optimierten Farben für Dark Mode und grünem "Heute" bei vollständiger Einnahme
 @Composable
 fun WeekCalendar(
     weekStart: LocalDate,
@@ -563,17 +586,22 @@ fun WeekCalendar(
     onDayClick: (LocalDate) -> Unit
 ) {
     val days = (0..6).map { weekStart.plusDays(it.toLong()) }
+    val darkTakenColor = Color(0xFF43A047)
+    val darkPartialColor = Color(0xFFFFC107)
+    val darkMissedColor = Color(0xFFD32F2F)
+    val darkEmptyColor = Color(0xFF424242)
     Row {
         days.forEach { day ->
             val isToday = day == today
             val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } }
             val taken = logs.count { it.status == DoseStatus.TAKEN }
             val total = logs.size
+            val allTakenToday = isToday && total > 0 && taken == total
             val color = when {
-                total == 0 -> Color.LightGray
-                taken == total -> Color(0xFF81C784)
-                taken > 0 -> Color(0xFFFFF176)
-                else -> Color(0xFFE57373)
+                total == 0 -> darkEmptyColor
+                taken == total -> if (isToday) darkTakenColor else darkTakenColor
+                taken > 0 -> darkPartialColor
+                else -> darkMissedColor
             }
             Column(
                 modifier = Modifier
@@ -581,8 +609,11 @@ fun WeekCalendar(
                     .aspectRatio(0.8f)
                     .padding(4.dp)
                     .background(
-                        if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                        else color
+                        when {
+                            allTakenToday -> darkTakenColor
+                            isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                            else -> color
+                        }
                     )
                     .clickable { onDayClick(day) },
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -599,9 +630,9 @@ fun WeekCalendar(
                         },
                         contentDescription = null,
                         tint = when {
-                            taken == total -> Color(0xFF81C784)
-                            taken > 0 -> Color(0xFFFFF176)
-                            else -> Color(0xFFE57373)
+                            taken == total -> darkTakenColor
+                            taken > 0 -> darkPartialColor
+                            else -> darkMissedColor
                         },
                         modifier = Modifier.size(18.dp)
                     )
