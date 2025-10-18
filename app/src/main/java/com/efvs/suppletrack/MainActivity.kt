@@ -302,41 +302,65 @@ fun DoseEditDialog(
 // Kalender mit Adherence-Score und Detail
 @Composable
 fun DoseCalendarScreen(doseItems: List<DoseItem>) {
-    var viewMode by remember { mutableStateOf("Monat") } // "Woche" oder "Monat"
+    var viewMode by remember { mutableStateOf("Monat") }
     val today = LocalDate.now()
     var currentMonth by remember { mutableStateOf(today.withDayOfMonth(1)) }
     var currentWeekStart by remember { mutableStateOf(today.with(java.time.DayOfWeek.MONDAY)) }
     var selectedDay by remember { mutableStateOf<LocalDate?>(null) }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Text("Kalender-Übersicht", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("Kalender-Übersicht", style = MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = {
+                if (viewMode == "Monat") currentMonth = today.withDayOfMonth(1)
+                else currentWeekStart = today.with(java.time.DayOfWeek.MONDAY)
+            }) {
+                Icon(Icons.Default.Star, contentDescription = "Gehe zu heute")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Ansicht:")
+            Text("Ansicht:", fontWeight = FontWeight.Medium)
             Spacer(Modifier.width(8.dp))
             SegmentedButton(
                 options = listOf("Woche", "Monat"),
                 selected = viewMode,
                 onSelected = { viewMode = it }
             )
-            Spacer(Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // Navigation in eigene Spalte
+            Column {
+                IconButton(onClick = {
+                    if (viewMode == "Monat") currentMonth = currentMonth.minusMonths(1)
+                    else currentWeekStart = currentWeekStart.minusWeeks(1)
+                }) {
+                    Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Zurück")
+                }
+                IconButton(onClick = {
+                    if (viewMode == "Monat") currentMonth = currentMonth.plusMonths(1)
+                    else currentWeekStart = currentWeekStart.plusWeeks(1)
+                }) {
+                    Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Vor")
+                }
+            }
+            Spacer(Modifier.width(8.dp))
             if (viewMode == "Monat") {
-                IconButton(onClick = { currentMonth = currentMonth.minusMonths(1) }) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Vorheriger Monat")
-                }
-                Text(currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")))
-                IconButton(onClick = { currentMonth = currentMonth.plusMonths(1) }) {
-                    Icon(Icons.Default.ArrowForward, contentDescription = "Nächster Monat")
-                }
+                Text(
+                    currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")),
+                    style = MaterialTheme.typography.titleLarge
+                )
             } else {
-                IconButton(onClick = { currentWeekStart = currentWeekStart.minusWeeks(1) }) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Vorherige Woche")
-                }
                 val weekEnd = currentWeekStart.plusDays(6)
-                Text("${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}")
-                IconButton(onClick = { currentWeekStart = currentWeekStart.plusWeeks(1) }) {
-                    Icon(Icons.Default.ArrowForward, contentDescription = "Nächste Woche")
-                }
+                Text(
+                    "${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}",
+                    style = MaterialTheme.typography.titleLarge
+                )
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -344,22 +368,33 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>) {
             MonthCalendar(
                 monthStart = currentMonth,
                 doseItems = doseItems,
+                today = today,
                 onDayClick = { selectedDay = it }
             )
         } else {
             WeekCalendar(
                 weekStart = currentWeekStart,
                 doseItems = doseItems,
+                today = today,
                 onDayClick = { selectedDay = it }
             )
         }
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF81C784))
+            Text(" = alles genommen", modifier = Modifier.padding(end = 16.dp))
+            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFE57373))
+            Text(" = nichts genommen", modifier = Modifier.padding(end = 16.dp))
+            Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFFFF176))
+            Text(" = teilweise", modifier = Modifier.padding(end = 16.dp))
+            Icon(Icons.Default.Star, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Text(" = heute", modifier = Modifier.padding(end = 16.dp))
+        }
         Spacer(Modifier.height(8.dp))
-        Text("Grün: alles genommen, Gelb: teilweise, Rot: nichts, Grau: keine Einträge")
-        Spacer(Modifier.height(16.dp))
         val totalTaken = doseItems.flatMap { it.adherenceLog }.count { it.status == DoseStatus.TAKEN }
         val totalScheduled = doseItems.flatMap { it.adherenceLog }.size
         val adherence = if (totalScheduled > 0) (totalTaken * 100 / totalScheduled) else 0
-        Text("Adherence: $adherence%")
+        Text("Adherence: $adherence%", style = MaterialTheme.typography.titleMedium)
         if (selectedDay != null) {
             val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == selectedDay } }
             AlertDialog(
@@ -368,7 +403,23 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>) {
                 text = {
                     Column {
                         logs.forEach {
-                            Text("${it.time.format(DateTimeFormatter.ofPattern("HH:mm"))}: ${it.status} ${it.reason ?: ""}")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    when (it.status) {
+                                        DoseStatus.TAKEN -> Icons.Default.CheckCircle
+                                        DoseStatus.SKIPPED -> Icons.Default.Info
+                                        DoseStatus.MISSED -> Icons.Default.Warning
+                                    },
+                                    contentDescription = null,
+                                    tint = when (it.status) {
+                                        DoseStatus.TAKEN -> Color(0xFF81C784)
+                                        DoseStatus.SKIPPED -> Color(0xFFFFF176)
+                                        DoseStatus.MISSED -> Color(0xFFE57373)
+                                    }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("${it.time.format(DateTimeFormatter.ofPattern("HH:mm"))}: ${it.status} ${it.reason ?: ""}")
+                            }
                         }
                         if (logs.isEmpty()) Text("Keine Einträge.")
                     }
@@ -379,31 +430,14 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>) {
     }
 }
 
-// Segmented Button für Wochen-/Monatswahl
-@Composable
-fun SegmentedButton(options: List<String>, selected: String, onSelected: (String) -> Unit) {
-    Row {
-        options.forEach { option ->
-            val selectedColor = if (option == selected) MaterialTheme.colorScheme.primary else Color.LightGray
-            Button(
-                onClick = { onSelected(option) },
-                colors = ButtonDefaults.buttonColors(containerColor = selectedColor),
-                modifier = Modifier.padding(end = 4.dp)
-            ) {
-                Text(option)
-            }
-        }
-    }
-}
-
-// Monatsansicht: 6x7 Grid
+// Monatsansicht mit Hervorhebung heute und Tooltip
 @Composable
 fun MonthCalendar(
     monthStart: LocalDate,
     doseItems: List<DoseItem>,
+    today: LocalDate,
     onDayClick: (LocalDate) -> Unit
 ) {
-    val firstDayOfWeek = java.time.DayOfWeek.MONDAY
     val daysInMonth = monthStart.lengthOfMonth()
     val firstDay = monthStart
     val firstWeekDay = firstDay.dayOfWeek.value % 7 // Montag=1
@@ -420,28 +454,50 @@ fun MonthCalendar(
         for (week in gridDays.chunked(7)) {
             Row {
                 week.forEach { day ->
+                    val isToday = day == today
+                    val logs = day?.let { doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } } } ?: emptyList()
+                    val taken = logs.count { it.status == DoseStatus.TAKEN }
+                    val total = logs.size
+                    val color = when {
+                        total == 0 -> Color.LightGray
+                        taken == total -> Color(0xFF81C784)
+                        taken > 0 -> Color(0xFFFFF176)
+                        else -> Color(0xFFE57373)
+                    }
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .aspectRatio(1f)
-                            .padding(2.dp)
+                            .padding(4.dp)
                             .background(
-                                day?.let {
-                                    val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } }
-                                    val taken = logs.count { it.status == DoseStatus.TAKEN }
-                                    val total = logs.size
-                                    when {
-                                        total == 0 -> Color.LightGray
-                                        taken == total -> Color(0xFF81C784)
-                                        taken > 0 -> Color(0xFFFFF176)
-                                        else -> Color(0xFFE57373)
-                                    }
-                                } ?: Color.Transparent
+                                if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                else color
                             )
                             .clickable(enabled = day != null) { day?.let { onDayClick(it) } },
                         contentAlignment = Alignment.Center
                     ) {
-                        if (day != null) Text(day.dayOfMonth.toString())
+                        if (day != null) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(day.dayOfMonth.toString(), fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal)
+                                if (isToday) Icon(Icons.Default.Star, contentDescription = "Heute", tint = MaterialTheme.colorScheme.primary)
+                                if (total > 0) {
+                                    Icon(
+                                        when {
+                                            taken == total -> Icons.Default.CheckCircle
+                                            taken > 0 -> Icons.Default.Info
+                                            else -> Icons.Default.Warning
+                                        },
+                                        contentDescription = null,
+                                        tint = when {
+                                            taken == total -> Color(0xFF81C784)
+                                            taken > 0 -> Color(0xFFFFF176)
+                                            else -> Color(0xFFE57373)
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -449,39 +505,58 @@ fun MonthCalendar(
     }
 }
 
-// Wochenansicht: 1x7
+// Wochenansicht mit Hervorhebung heute und Tooltip
 @Composable
 fun WeekCalendar(
     weekStart: LocalDate,
     doseItems: List<DoseItem>,
+    today: LocalDate,
     onDayClick: (LocalDate) -> Unit
 ) {
     val days = (0..6).map { weekStart.plusDays(it.toLong()) }
     Row {
         days.forEach { day ->
+            val isToday = day == today
+            val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } }
+            val taken = logs.count { it.status == DoseStatus.TAKEN }
+            val total = logs.size
+            val color = when {
+                total == 0 -> Color.LightGray
+                taken == total -> Color(0xFF81C784)
+                taken > 0 -> Color(0xFFFFF176)
+                else -> Color(0xFFE57373)
+            }
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .aspectRatio(0.8f)
-                    .padding(2.dp)
+                    .padding(4.dp)
                     .background(
-                        run {
-                            val logs = doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } }
-                            val taken = logs.count { it.status == DoseStatus.TAKEN }
-                            val total = logs.size
-                            when {
-                                total == 0 -> Color.LightGray
-                                taken == total -> Color(0xFF81C784)
-                                taken > 0 -> Color(0xFFFFF176)
-                                else -> Color(0xFFE57373)
-                            }
-                        }
+                        if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                        else color
                     )
                     .clickable { onDayClick(day) },
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(day.dayOfWeek.name.take(2), fontWeight = FontWeight.Bold)
-                Text(day.dayOfMonth.toString())
+                Text(day.dayOfMonth.toString(), fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal)
+                if (isToday) Icon(Icons.Default.Star, contentDescription = "Heute", tint = MaterialTheme.colorScheme.primary)
+                if (total > 0) {
+                    Icon(
+                        when {
+                            taken == total -> Icons.Default.CheckCircle
+                            taken > 0 -> Icons.Default.Info
+                            else -> Icons.Default.Warning
+                        },
+                        contentDescription = null,
+                        tint = when {
+                            taken == total -> Color(0xFF81C784)
+                            taken > 0 -> Color(0xFFFFF176)
+                            else -> Color(0xFFE57373)
+                        },
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -730,4 +805,21 @@ fun SuppleTrackTheme(
         colorScheme = colors,
         content = content
     )
+}
+
+// Ersetze die fehlerhafte SegmentedButton-Funktion durch diese eigene Implementierung:
+@Composable
+fun SegmentedButton(options: List<String>, selected: String, onSelected: (String) -> Unit) {
+    Row {
+        options.forEach { option ->
+            val selectedColor = if (option == selected) MaterialTheme.colorScheme.primary else Color.LightGray
+            Button(
+                onClick = { onSelected(option) },
+                colors = ButtonDefaults.buttonColors(containerColor = selectedColor),
+                modifier = Modifier.padding(end = 4.dp)
+            ) {
+                Text(option, color = if (option == selected) Color.White else Color.Black)
+            }
+        }
+    }
 }
