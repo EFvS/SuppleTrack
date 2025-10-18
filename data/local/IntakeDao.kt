@@ -1,0 +1,3 @@
+// ...existing code...
+@Query("SELECT * FROM intakes WHERE id = :intakeId LIMIT 1")
+suspend fun getIntakeById(intakeId: Long): IntakeEntity?
