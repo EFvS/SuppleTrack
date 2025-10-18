@@ -1,7 +1,13 @@
 package com.efvs.suppletrack
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -22,9 +28,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.*
 
 enum class DoseType { MEDICATION, SUPPLEMENT }
 enum class DoseStatus { TAKEN, SKIPPED, MISSED }
@@ -71,6 +79,17 @@ class MainActivity : ComponentActivity() {
                     onLanguageChange = { language = it }
                 )
             }
+        }
+
+        // Notification Channel erstellen
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "suppletrack_reminder",
+                "SuppleTrack Reminder",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
         }
     }
 }
@@ -164,6 +183,11 @@ fun AppRoot(
                 ExportDialog(doseItems = doseItems, onDismiss = { exportDialog = false })
             }
         }
+    }
+
+    // Reminder planen, wenn DoseItems geändert werden
+    LaunchedEffect(doseItems) {
+        // scheduleSupplementReminders(context, doseItems) // Kommentar entfernt, da WorkManager entfernt wurde
     }
 }
 
@@ -310,7 +334,13 @@ fun DoseEditDialog(
     var name by remember { mutableStateOf(TextFieldValue(doseItem?.name ?: "")) }
     var dosage by remember { mutableStateOf(TextFieldValue(doseItem?.dosage ?: "")) }
     var type by remember { mutableStateOf(doseItem?.type ?: DoseType.SUPPLEMENT) }
-    var time by remember { mutableStateOf(doseItem?.schedule?.times?.firstOrNull()?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "08:00") }
+    // Zeitplan: mehrere Zeiten
+    var times by remember { mutableStateOf(doseItem?.schedule?.times ?: listOf(LocalTime.of(8,0))) }
+    // Wochentage: 0=Montag ... 6=Sonntag
+    var recurrenceDays by remember { mutableStateOf(doseItem?.schedule?.recurrenceDays ?: (0..6).toList()) }
+    var showTimePicker by remember { mutableStateOf(false) }
+    var timePickerHour by remember { mutableStateOf(8) }
+    var timePickerMinute by remember { mutableStateOf(0) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -328,13 +358,74 @@ fun DoseEditDialog(
                         onSelected = { type = if (it == tr("medication", language)) DoseType.MEDICATION else DoseType.SUPPLEMENT }
                     )
                 }
-                OutlinedTextField(value = time, onValueChange = { time = it }, label = { Text(tr("schedule", language) + " (HH:mm)") })
+                Spacer(Modifier.height(12.dp))
+                Text(tr("schedule", language) + ":")
+                // Anzeige der Zeiten
+                times.forEachIndexed { idx, t ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(t.format(DateTimeFormatter.ofPattern("HH:mm")), modifier = Modifier.weight(1f))
+                        IconButton(onClick = {
+                            times = times.toMutableList().apply { removeAt(idx) }
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Remove time")
+                        }
+                    }
+                }
+                Button(
+                    onClick = { showTimePicker = true },
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Notifications, contentDescription = "Add time")
+                    Spacer(Modifier.width(8.dp))
+                    Text(tr("add_time", language))
+                }
+                if (showTimePicker) {
+                    TimePickerDialog(
+                        initialHour = timePickerHour,
+                        initialMinute = timePickerMinute,
+                        onDismiss = { showTimePicker = false },
+                        onConfirm = { hour, minute ->
+                            val newTime = LocalTime.of(hour, minute)
+                            if (!times.contains(newTime)) times = times + newTime
+                            showTimePicker = false
+                        }
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(tr("repeat", language) + ":")
+                Row {
+                    val daysOfWeek = listOf(
+                        tr("mo", language), tr("tu", language), tr("we", language),
+                        tr("th", language), tr("fr", language), tr("sa", language), tr("su", language)
+                    )
+                    (0..6).forEach { dayIdx ->
+                        val selected = recurrenceDays.contains(dayIdx)
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                recurrenceDays = if (selected) recurrenceDays - dayIdx else recurrenceDays + dayIdx
+                            },
+                            label = { Text(daysOfWeek[dayIdx]) },
+                            modifier = Modifier.padding(end = 2.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = recurrenceDays.size == 7,
+                        onCheckedChange = { checked ->
+                            recurrenceDays = if (checked) (0..6).toList() else listOf()
+                        }
+                    )
+                    Text(tr("repeat_daily", language))
+                }
             }
         },
         confirmButton = {
             Button(onClick = {
                 val id = doseItem?.id ?: (0..100000).random()
-                val schedule = DoseSchedule(times = listOf(LocalTime.parse(time)))
+                val schedule = DoseSchedule(times = times.sorted(), recurrenceDays = recurrenceDays.sorted())
                 onSave(DoseItem(
                     id = id,
                     name = name.text,
@@ -346,6 +437,59 @@ fun DoseEditDialog(
         },
         dismissButton = { Button(onClick = onDismiss) { Text(tr("cancel", language)) } }
     )
+}
+
+// Einfacher TimePickerDialog für Compose
+@Composable
+fun TimePickerDialog(
+    initialHour: Int,
+    initialMinute: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int, Int) -> Unit
+) {
+    var hour by remember { mutableStateOf(initialHour) }
+    var minute by remember { mutableStateOf(initialMinute) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Zeit wählen") },
+        text = {
+            Column {
+                Text("Stunde: ${hour}", fontWeight = FontWeight.Bold)
+                Slider(
+                    value = hour.toFloat(),
+                    onValueChange = { hour = it.toInt() },
+                    valueRange = 0f..23f,
+                    steps = 22
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("Minute: ${minute}", fontWeight = FontWeight.Bold)
+                Slider(
+                    value = minute.toFloat(),
+                    onValueChange = { minute = it.toInt() },
+                    valueRange = 0f..59f,
+                    steps = 58
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(hour, minute) }) { Text("OK") }
+        },
+        dismissButton = { Button(onClick = onDismiss) { Text("Abbrechen") } }
+    )
+}
+
+// Einfacher NumberPicker für Compose
+@Composable
+fun NumberPicker(value: Int, range: IntRange, onValueChange: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = { if (value > range.first) onValueChange(value - 1) }) {
+            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Minus")
+        }
+        Text(value.toString(), modifier = Modifier.width(32.dp), fontWeight = FontWeight.Bold)
+        IconButton(onClick = { if (value < range.last) onValueChange(value + 1) }) {
+            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Plus")
+        }
+    }
 }
 
 // Kalender mit Adherence-Score und Detail
@@ -360,55 +504,49 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Text(tr("calendar", language), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(12.dp))
-        // Erste Zeile: Intervall-Slider links, Navigation rechts
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            // Intervall-Slider (Woche/Monat) in der ersten Spalte
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                SegmentedButton(
-                    options = listOf("Woche", "Monat"),
-                    selected = viewMode,
-                    onSelected = { viewMode = it }
-                )
-            }
-            // Navigation (Zurück, Text, Weiter) in der zweiten Spalte
-            Box(modifier = Modifier.weight(2f), contentAlignment = Alignment.Center) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    IconButton(onClick = {
-                        if (viewMode == "Monat") currentMonth = currentMonth.minusMonths(1)
-                        else currentWeekStart = currentWeekStart.minusWeeks(1)
-                    }) {
-                        Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Zurück")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    if (viewMode == "Monat") {
-                        Text(
-                            currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")),
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1
-                        )
-                    } else {
-                        val weekEnd = currentWeekStart.plusDays(6)
-                        Text(
-                            "${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}",
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    IconButton(onClick = {
-                        if (viewMode == "Monat") currentMonth = currentMonth.plusMonths(1)
-                        else currentWeekStart = currentWeekStart.plusWeeks(1)
-                    }) {
-                        Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Vor")
-                    }
+        // Intervall-Slider (Woche/Monat)
+        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            SegmentedButton(
+                options = listOf("Woche", "Monat"),
+                selected = viewMode,
+                onSelected = { viewMode = it }
+            )
+        }
+        // Navigation (Zurück, Text, Weiter)
+        Box(modifier = Modifier.weight(2f), contentAlignment = Alignment.Center) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                IconButton(onClick = {
+                    if (viewMode == "Monat") currentMonth = currentMonth.minusMonths(1)
+                    else currentWeekStart = currentWeekStart.minusWeeks(1)
+                }) {
+                    Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Zurück")
+                }
+                Spacer(Modifier.width(8.dp))
+                if (viewMode == "Monat") {
+                    Text(
+                        currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")),
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1
+                    )
+                } else {
+                    val weekEnd = currentWeekStart.plusDays(6)
+                    Text(
+                        "${currentWeekStart.format(DateTimeFormatter.ofPattern("dd.MM."))} - ${weekEnd.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))}",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = {
+                    if (viewMode == "Monat") currentMonth = currentMonth.plusMonths(1)
+                    else currentWeekStart = currentWeekStart.plusWeeks(1)
+                }) {
+                    Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Vor")
                 }
             }
         }
@@ -442,18 +580,6 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
             Spacer(Modifier.width(8.dp))
             Text(tr("today", language))
         }
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF81C784))
-            Text(" = alles genommen", modifier = Modifier.padding(end = 16.dp))
-            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFE57373))
-            Text(" = nichts genommen", modifier = Modifier.padding(end = 16.dp))
-            Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFFFF176))
-            Text(" = teilweise", modifier = Modifier.padding(end = 16.dp))
-            Icon(Icons.Default.Star, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text(" = heute", modifier = Modifier.padding(end = 16.dp))
-        }
-        Spacer(Modifier.height(8.dp))
         val totalTaken = doseItems.flatMap { it.adherenceLog }.count { it.status == DoseStatus.TAKEN }
         val totalScheduled = doseItems.flatMap { it.adherenceLog }.size
         val adherence = if (totalScheduled > 0) (totalTaken * 100 / totalScheduled) else 0
@@ -694,7 +820,6 @@ fun CalendarScreen(intakeHistory: List<IntakeHistory>) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        Text("Grün: alles genommen, Gelb: teilweise, Rot: nichts")
     }
 }
 
@@ -944,6 +1069,16 @@ fun tr(key: String, lang: AppLanguage): String {
             "new_profile" -> "New Profile"
             "adherence" -> "Adherence"
             "details_for" -> "Details for"
+            "add_time" -> "Add time"
+            "repeat" -> "Repeat"
+            "repeat_daily" -> "Repeat daily"
+            "mo" -> "Mo"
+            "tu" -> "Tu"
+            "we" -> "We"
+            "th" -> "Th"
+            "fr" -> "Fr"
+            "sa" -> "Sa"
+            "su" -> "Su"
             else -> key
         }
         AppLanguage.DE -> when (key) {
@@ -977,6 +1112,16 @@ fun tr(key: String, lang: AppLanguage): String {
             "new_profile" -> "Neues Profil"
             "adherence" -> "Adherence"
             "details_for" -> "Details für"
+            "add_time" -> "Zeit hinzufügen"
+            "repeat" -> "Wiederholen"
+            "repeat_daily" -> "Täglich"
+            "mo" -> "Mo"
+            "tu" -> "Di"
+            "we" -> "Mi"
+            "th" -> "Do"
+            "fr" -> "Fr"
+            "sa" -> "Sa"
+            "su" -> "So"
             else -> key
         }
         AppLanguage.ES -> when (key) {
@@ -1010,6 +1155,16 @@ fun tr(key: String, lang: AppLanguage): String {
             "new_profile" -> "Nuevo perfil"
             "adherence" -> "Adherencia"
             "details_for" -> "Detalles para"
+            "add_time" -> "Añadir hora"
+            "repeat" -> "Repetir"
+            "repeat_daily" -> "Diario"
+            "mo" -> "Lu"
+            "tu" -> "Ma"
+            "we" -> "Mi"
+            "th" -> "Ju"
+            "fr" -> "Vi"
+            "sa" -> "Sa"
+            "su" -> "Do"
             else -> key
         }
         AppLanguage.FR -> when (key) {
@@ -1043,6 +1198,16 @@ fun tr(key: String, lang: AppLanguage): String {
             "new_profile" -> "Nouveau profil"
             "adherence" -> "Adhérence"
             "details_for" -> "Détails pour"
+            "add_time" -> "Ajouter heure"
+            "repeat" -> "Répéter"
+            "repeat_daily" -> "Quotidien"
+            "mo" -> "Lu"
+            "tu" -> "Ma"
+            "we" -> "Me"
+            "th" -> "Je"
+            "fr" -> "Ve"
+            "sa" -> "Sa"
+            "su" -> "Di"
             else -> key
         }
     }
@@ -1061,6 +1226,91 @@ fun SegmentedButton(options: List<String>, selected: String, onSelected: (String
             ) {
                 Text(option, color = if (option == selected) Color.White else Color.Black)
             }
+        }
+    }
+}
+
+// Reminder-Worker für Push Notification (WorkManager entfernt, nur als Platzhalter belassen)
+class SupplementReminderWorker(
+    ctx: Context,
+    params: Any // WorkerParameters entfernt
+) /*: Worker(ctx, params)*/ {
+    // Dummy-Implementierung, da WorkManager entfernt
+    // fun doWork(): Result { ... }
+}
+
+// BroadcastReceiver zum Anzeigen der Notification und Markieren als genommen
+class SupplementTakenReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val supplementId = intent.getIntExtra("supplementId", -1)
+        val supplementName = intent.getStringExtra("supplementName") ?: ""
+        // Notification mit "Taken"-Aktion
+        val takenIntent = Intent(context, SupplementMarkTakenReceiver::class.java).apply {
+            putExtra("supplementId", supplementId)
+        }
+        val takenPendingIntent = PendingIntent.getBroadcast(
+            context,
+            supplementId,
+            takenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = androidx.core.app.NotificationCompat.Builder(context, "suppletrack_reminder")
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle("Supplement Reminder")
+            .setContentText("Take: $supplementName")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .addAction(
+                android.R.drawable.checkbox_on_background,
+                "Taken",
+                takenPendingIntent
+            )
+            .setAutoCancel(true)
+        NotificationManagerCompat.from(context).notify(supplementId, builder.build())
+    }
+}
+
+// Receiver zum Markieren als genommen (hier nur Notification entfernen, Logik muss ergänzt werden)
+class SupplementMarkTakenReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val supplementId = intent.getIntExtra("supplementId", -1)
+        NotificationManagerCompat.from(context).cancel(supplementId)
+        // TODO: DoseItem als genommen markieren (z.B. über Repository/Room/SharedPreferences)
+    }
+}
+
+// Push Notification Reminder ohne WorkManager, mit Timer (Demo)
+fun scheduleSupplementReminders(context: Context, doseItems: List<DoseItem>) {
+    doseItems.forEach { item ->
+        item.schedule.times.forEach { time ->
+            val now = LocalTime.now()
+            val today = LocalDate.now()
+            val targetDateTime = today.atTime(time)
+            val calendar = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, time.hour)
+                set(Calendar.MINUTE, time.minute)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            if (calendar.timeInMillis < System.currentTimeMillis()) {
+                calendar.add(Calendar.DAY_OF_MONTH, 1)
+            }
+            val intent = Intent(context, SupplementTakenReceiver::class.java).apply {
+                putExtra("supplementId", item.id)
+                putExtra("supplementName", item.name)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                item.id,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            // AlarmManager für Demo (in echten Apps: JobScheduler/ForegroundService für Zuverlässigkeit)
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.setExact(
+                android.app.AlarmManager.RTC_WAKEUP,
+                calendar.timeInMillis,
+                pendingIntent
+            )
         }
     }
 }
