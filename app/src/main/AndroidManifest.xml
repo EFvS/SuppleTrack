@@ -18,5 +18,6 @@
 
         <receiver android:name=".MissedDoseReceiver" android:exported="false"/>
         <receiver android:name=".DoseTakenReceiver" android:exported="false"/>
+        <receiver android:name=".MinuteCheckReceiver" android:exported="false"/>
     </application>
 </manifest>

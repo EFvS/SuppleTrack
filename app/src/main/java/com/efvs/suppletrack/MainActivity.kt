@@ -6,6 +6,7 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -47,6 +48,9 @@ import androidx.core.content.ContextCompat
 import android.provider.Settings
 import android.net.Uri
 import java.util.Calendar
+import kotlinx.coroutines.*
+import java.util.Timer
+import java.util.TimerTask
 
 // Fix: Java Time imports
 import java.time.LocalTime
@@ -79,6 +83,7 @@ import android.app.DatePickerDialog
 
 // Senior Dev 1: Zusätzliche Imports für Logging und Debugging
 import android.util.Log
+import android.app.NotificationManager
 
 enum class DoseType { MEDICATION, SUPPLEMENT }
 enum class DoseStatus { TAKEN, SKIPPED, MISSED }
@@ -111,6 +116,16 @@ class MainActivity : ComponentActivity() {
     // Neu: Notification Toggle persistent speichern
     private val PREFS_NAME = "suppletrack"
     private val PREFS_NOTIF_KEY = "notifications_enabled"
+
+    // Prüft, ob Push Notifications erlaubt sind (Android 13+)
+    private fun areNotificationsEnabled(): Boolean {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationManager.areNotificationsEnabled()
+        } else {
+            NotificationManagerCompat.from(this).areNotificationsEnabled()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -228,6 +243,24 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+
+        // Nach dem Permission-Check: Prüfe, ob Notifications erlaubt sind
+        if (!areNotificationsEnabled()) {
+            AlertDialog.Builder(this)
+                .setTitle("Notifications disabled")
+                .setMessage("Push notifications are disabled for SuppleTrack. Please enable them in the system settings to receive reminders.")
+                .setPositiveButton("Open settings") { _, _ ->
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    }
+                    startActivity(intent)
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        // Jede Minute einen Alarm setzen, der prüft, ob noch Supplements offen sind
+        scheduleMinuteCheckAlarm(this)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -250,6 +283,56 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         unregisterReceiver(doseTakenBroadcastReceiver)
+    }
+}
+
+// Jede Minute einen Alarm, der einen Broadcast sendet
+fun scheduleMinuteCheckAlarm(context: Context) {
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    val intent = Intent(context, MinuteCheckReceiver::class.java)
+    val pendingIntent = PendingIntent.getBroadcast(
+        context,
+        123456,
+        intent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+    // Wiederholender Alarm: jede Minute ab jetzt
+    alarmManager.setRepeating(
+        AlarmManager.ELAPSED_REALTIME_WAKEUP,
+        SystemClock.elapsedRealtime() + 60_000,
+        60_000,
+        pendingIntent
+    )
+}
+
+// Receiver, der jede Minute prüft, ob noch Supplements offen sind
+class MinuteCheckReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val prefs = context.getSharedPreferences("suppletrack", Context.MODE_PRIVATE)
+        val today = java.time.LocalDate.now()
+        // Dummy: IDs und Zeiten aus den gespeicherten DoseItems (hier nur id=1, 08:00)
+        // In einer echten App sollte dies aus Room/Repository kommen!
+        val doseId = 1
+        val doseName = "Creatin"
+        val doseTime = "08:00"
+        val key = "taken_${doseId}_${doseTime}_$today"
+        val alreadyTaken = prefs.getBoolean(key, false)
+        if (!alreadyTaken) {
+            // Notification senden, falls noch nicht gesendet
+            val notificationId = 999999
+            val notificationManager = NotificationManagerCompat.from(context)
+            val builder = NotificationCompat.Builder(context, "suppletrack_reminder")
+                .setSmallIcon(android.R.drawable.ic_popup_reminder)
+                .setContentTitle("Supplements offen")
+                .setContentText("Du hast heute noch nicht alle Supplements genommen.")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setOngoing(false)
+                .setAutoCancel(true)
+            notificationManager.notify(notificationId, builder.build())
+        } else {
+            // Wenn alles genommen, Notification entfernen
+            NotificationManagerCompat.from(context).cancel(999999)
+        }
     }
 }
 
@@ -1336,7 +1419,6 @@ fun scheduleMissedDoseNotifications(context: Context, doseItems: List<DoseItem>)
     }
 }
 
-// MissedDoseReceiver: Zeigt Notification, wenn noch nicht genommen
 class MissedDoseReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val doseId = intent.getIntExtra("doseId", -1)
