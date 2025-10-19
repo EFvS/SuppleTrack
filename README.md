@@ -11,6 +11,11 @@ It supports reminders (Android standard notifications with action button), intak
 - Flexible schedules: daily, weekly, intervals, temporary
 - Reminders: Push notifications for missed doses (Android standard, no WorkManager), mark as taken directly from notification
 - **Requires permission:** `android.permission.SCHEDULE_EXACT_ALARM` in AndroidManifest.xml for exact reminders
+- **Requires receiver registration:**  
+  ```xml
+  <receiver android:name=".MissedDoseReceiver" android:exported="false"/>
+  <receiver android:name=".DoseTakenReceiver" android:exported="false"/>
+  ```
 - Adherence log: Status (Taken, Skipped, Missed) with timestamp and reason
 - Calendar overview: Visualize intake history, details per day
 - Adherence score: Percentage per week/month
@@ -31,7 +36,11 @@ It supports reminders (Android standard notifications with action button), intak
 1. Clone or download the repo.
 2. Open in [Android Studio](https://developer.android.com/studio).
 3. **Add to your AndroidManifest.xml:**  
-   `<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>`
+   ```xml
+   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+   <receiver android:name=".MissedDoseReceiver" android:exported="false"/>
+   <receiver android:name=".DoseTakenReceiver" android:exported="false"/>
+   ```
 4. Sync Gradle and run on an emulator or device.
 5. On first launch, follow onboarding to set up your first profile.
 

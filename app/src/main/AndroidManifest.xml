@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.efvs.suppletrack">
 
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:name=".SuppleTrackApp"
         android:label="@string/app_name"
@@ -12,5 +15,8 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <receiver android:name=".MissedDoseReceiver" android:exported="false"/>
+        <receiver android:name=".DoseTakenReceiver" android:exported="false"/>
     </application>
 </manifest>
