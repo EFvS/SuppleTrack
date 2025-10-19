@@ -1,14 +1,9 @@
 package com.efvs.suppletrack
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
+import android.app.*
+import android.content.*
 import android.os.Build
 import android.os.Bundle
-import android.app.TimePickerDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -16,35 +11,56 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
-import java.util.*
+import java.util.Calendar
+
+// Compose Icons
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material.icons.automirrored.filled.List
 
 enum class DoseType { MEDICATION, SUPPLEMENT }
 enum class DoseStatus { TAKEN, SKIPPED, MISSED }
 
 data class DoseSchedule(
     val times: List<LocalTime> = listOf(LocalTime.of(8,0)),
-    val recurrenceDays: List<Int> = (0..6).toList(), // 0=Montag
-    val durationDays: Int? = null // z.B. 7 Tage
+    val recurrenceDays: List<Int> = (0..6).toList(),
+    val durationDays: Int? = null
 )
 
-// RefillThreshold entfernt aus DoseItem
 data class DoseItem(
     val id: Int,
     var name: String,
@@ -61,11 +77,9 @@ data class DoseLog(
     val reason: String? = null
 )
 
-data class Profile(val name: String)
-data class Supplement(val name: String, var taken: Boolean = false)
-data class IntakeHistory(val date: LocalDate, val supplement: String, val taken: Boolean)
-
 class MainActivity : ComponentActivity() {
+    private lateinit var doseTakenBroadcastReceiver: BroadcastReceiver
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -82,7 +96,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Notification Channel erstellen
+        // Notification Channel für Reminder
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 "suppletrack_reminder",
@@ -92,6 +106,31 @@ class MainActivity : ComponentActivity() {
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
+
+        // Receiver für "DoseTaken" registrieren
+        doseTakenBroadcastReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val doseId = intent.getIntExtra("doseId", -1)
+                val doseTime = intent.getStringExtra("doseTime")
+                // Sende einen lokalen Broadcast, damit Compose die Einnahme als "genommen" markieren kann
+                val uiIntent = Intent("com.efvs.suppletrack.DOSE_TAKEN_UI").apply {
+                    putExtra("doseId", doseId)
+                    putExtra("doseTime", doseTime)
+                }
+                sendBroadcast(uiIntent)
+            }
+        }
+        // Fix: Setze das Flag für nicht exportierten Receiver
+        registerReceiver(
+            doseTakenBroadcastReceiver,
+            IntentFilter("com.efvs.suppletrack.DOSE_TAKEN"),
+            Context.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterReceiver(doseTakenBroadcastReceiver)
     }
 }
 
@@ -110,14 +149,6 @@ fun AppRoot(
     onLanguageChange: (AppLanguage) -> Unit
 ) {
     // Simulierte Datenhaltung (ersetzbar durch ViewModel/Room)
-    var profiles by remember { mutableStateOf(listOf(Profile("Ich"))) }
-    var selectedProfile by remember { mutableStateOf(profiles.first()) }
-    var supplements by remember { mutableStateOf(
-        listOf(
-            Supplement("Creatin"),
-        )
-    )}
-    var intakeHistory by remember { mutableStateOf(listOf<IntakeHistory>()) }
     var doseItems by remember { mutableStateOf(
         mutableListOf(
             DoseItem(
@@ -133,10 +164,40 @@ fun AppRoot(
         )
     ) }
     var selectedScreen by remember { mutableStateOf(MainScreen.Checklist) }
-    var exportDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    // Refill-Benachrichtigung entfernt
+    // Reminder: Nur einmal pro Änderung planen
+    LaunchedEffect(doseItems.size) {
+        scheduleMissedDoseNotifications(context, doseItems)
+    }
+
+    // Broadcast-Receiver für UI-Update
+    val doseTakenUiReceiver = rememberUpdatedState(newValue = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val doseId = intent.getIntExtra("doseId", -1)
+            val doseTime = intent.getStringExtra("doseTime")
+            val today = LocalDate.now()
+            val idx = doseItems.indexOfFirst { it.id == doseId }
+            if (idx != -1) {
+                val item = doseItems[idx]
+                val time = doseTime?.let { LocalTime.parse(it, DateTimeFormatter.ofPattern("HH:mm")) }
+                if (time != null && item.adherenceLog.none { it.date == today && it.time == time && it.status == DoseStatus.TAKEN }) {
+                    item.adherenceLog.add(DoseLog(today, time, DoseStatus.TAKEN, null))
+                    doseItems = doseItems.toMutableList()
+                }
+            }
+        }
+    })
+
+    DisposableEffect(Unit) {
+        val filter = IntentFilter("com.efvs.suppletrack.DOSE_TAKEN_UI")
+        // Fix: Setze das Flag für nicht exportierten Receiver
+        context.registerReceiver(doseTakenUiReceiver.value, filter, Context.RECEIVER_NOT_EXPORTED)
+        onDispose {
+            context.unregisterReceiver(doseTakenUiReceiver.value)
+        }
+    }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -180,15 +241,7 @@ fun AppRoot(
                     onLanguageChange = onLanguageChange
                 )
             }
-            if (exportDialog) {
-                ExportDialog(doseItems = doseItems, onDismiss = { exportDialog = false })
-            }
         }
-    }
-
-    // Reminder planen, wenn DoseItems geändert werden
-    LaunchedEffect(doseItems) {
-        // scheduleSupplementReminders(context, doseItems) // Kommentar entfernt, da WorkManager entfernt wurde
     }
 }
 
@@ -448,13 +501,26 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Text(tr("calendar", language), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(12.dp))
-        // Intervall-Slider (Woche/Monat)
-        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            SegmentedButton(
-                options = listOf("Woche", "Monat"),
-                selected = viewMode,
-                onSelected = { viewMode = it }
-            )
+        // Ersetze SegmentedButton durch zwei OutlinedButtons
+        Row {
+            OutlinedButton(
+                onClick = { viewMode = "Woche" },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = if (viewMode == "Woche") MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.Transparent
+                ),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Woche")
+            }
+            OutlinedButton(
+                onClick = { viewMode = "Monat" },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = if (viewMode == "Monat") MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.Transparent
+                ),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Monat")
+            }
         }
         // Navigation (Zurück, Text, Weiter)
         Box(modifier = Modifier.weight(2f), contentAlignment = Alignment.Center) {
@@ -709,152 +775,6 @@ fun WeekCalendar(
                 }
             }
         }
-    }
-}
-
-// Exportfunktion (Demo)
-@Composable
-fun ExportDialog(doseItems: List<DoseItem>, onDismiss: () -> Unit) {
-    val csv = doseItems.flatMap { item ->
-        item.adherenceLog.map {
-            "${item.name},${item.dosage},${item.type},${it.date},${it.time},${it.status},${it.reason ?: ""}"
-        }
-    }.joinToString("\n")
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Export (CSV)") },
-        text = { Text(csv.ifBlank { "Keine Daten." }) },
-        confirmButton = { Button(onClick = onDismiss) { Text("Schließen") } }
-    )
-}
-
-@Composable
-fun CalendarScreen(intakeHistory: List<IntakeHistory>) {
-    val today = LocalDate.now()
-    val days = (0..6).map { today.minusDays(it.toLong()) }.reversed()
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp)
-    ) {
-        Text("Kalender-Übersicht", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        days.forEach { day ->
-            val takenCount = intakeHistory.count { it.date == day && it.taken }
-            val total = intakeHistory.count { it.date == day }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-            ) {
-                Text(day.toString(), modifier = Modifier.width(110.dp))
-                Box(
-                    modifier = Modifier
-                        .height(18.dp)
-                        .width(120.dp)
-                        .background(
-                            if (total > 0 && takenCount == total) Color(0xFF81C784)
-                            else if (takenCount > 0) Color(0xFFFFF176)
-                            else Color(0xFFE57373)
-                        )
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("$takenCount/$total")
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-    }
-}
-
-@Composable
-fun ProfilesScreen(
-    profiles: List<Profile>,
-    selected: Profile,
-    onSelect: (Profile) -> Unit,
-    onAdd: (String) -> Unit,
-    onDelete: (Profile) -> Unit
-) {
-    var newProfile by remember { mutableStateOf("") }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp)
-    ) {
-        Text("Profile", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        LazyColumn {
-            items(profiles) { profile ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelect(profile) }
-                        .background(if (profile == selected) Color(0xFFE3F2FD) else Color.Transparent)
-                        .padding(8.dp)
-                ) {
-                    Text(profile.name, fontWeight = if (profile == selected) FontWeight.Bold else FontWeight.Normal)
-                    Spacer(Modifier.weight(1f))
-                    if (profiles.size > 1) {
-                        IconButton(onClick = { onDelete(profile) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Löschen")
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(16.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = newProfile,
-                onValueChange = { newProfile = it },
-                label = { Text("Neues Profil") },
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = {
-                onAdd(newProfile.trim())
-                newProfile = ""
-            }) {
-                Text("Hinzufügen")
-            }
-        }
-    }
-}
-
-@Composable
-fun ExportScreen(onExport: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Export & Backup", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = onExport) {
-            Icon(Icons.Default.Warning, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Exportieren (Demo)")
-        }
-        Spacer(Modifier.height(16.dp))
-        Text("Exportiere deine Einnahme-Historie oder sichere deine Daten in Google Drive.")
-    }
-}
-
-@Composable
-fun WidgetScreen() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Widget", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        Text("Füge das SuppleTrack-Widget zu deinem Homescreen hinzu, um die Tages-Checkliste schnell zu sehen.")
     }
 }
 
@@ -1157,104 +1077,87 @@ fun tr(key: String, lang: AppLanguage): String {
     }
 }
 
-// Ersetze die fehlerhafte SegmentedButton-Funktion durch diese eigene Implementierung:
-@Composable
-fun SegmentedButton(options: List<String>, selected: String, onSelected: (String) -> Unit) {
-    Row {
-        options.forEach { option ->
-            val selectedColor = if (option == selected) MaterialTheme.colorScheme.primary else Color.LightGray
-            Button(
-                onClick = { onSelected(option) },
-                colors = ButtonDefaults.buttonColors(containerColor = selectedColor),
-                modifier = Modifier.padding(end = 4.dp)
-            ) {
-                Text(option, color = if (option == selected) Color.White else Color.Black)
+// Reminder für verpasste Einnahmen (Android Standard)
+fun scheduleMissedDoseNotifications(context: Context, doseItems: List<DoseItem>) {
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    doseItems.forEach { item ->
+        item.schedule.times.forEach { time ->
+            val today = LocalDate.now()
+            val alreadyTaken = item.adherenceLog.any { it.date == today && it.time == time && it.status == DoseStatus.TAKEN }
+            if (!alreadyTaken) {
+                val calendar = Calendar.getInstance().apply {
+                    set(Calendar.YEAR, today.year)
+                    set(Calendar.MONTH, today.monthValue - 1)
+                    set(Calendar.DAY_OF_MONTH, today.dayOfMonth)
+                    set(Calendar.HOUR_OF_DAY, time.hour)
+                    set(Calendar.MINUTE, time.minute)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                if (calendar.timeInMillis < System.currentTimeMillis()) return@forEach
+                val intent = Intent(context, MissedDoseReceiver::class.java).apply {
+                    putExtra("doseId", item.id)
+                    putExtra("doseName", item.name)
+                    putExtra("doseTime", time.format(DateTimeFormatter.ofPattern("HH:mm")))
+                }
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    item.id * 1000 + time.hour * 100 + time.minute,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                try {
+                    alarmManager.setExact(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
+                    )
+                } catch (e: SecurityException) {
+                    // Die Permission android.permission.SCHEDULE_EXACT_ALARM fehlt im Manifest!
+                    // <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+                    e.printStackTrace()
+                }
             }
         }
     }
 }
 
-// Reminder-Worker für Push Notification (WorkManager entfernt, nur als Platzhalter belassen)
-class SupplementReminderWorker(
-    ctx: Context,
-    params: Any // WorkerParameters entfernt
-) /*: Worker(ctx, params)*/ {
-    // Dummy-Implementierung, da WorkManager entfernt
-    // fun doWork(): Result { ... }
-}
-
-// BroadcastReceiver zum Anzeigen der Notification und Markieren als genommen
-class SupplementTakenReceiver : BroadcastReceiver() {
+class MissedDoseReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val supplementId = intent.getIntExtra("supplementId", -1)
-        val supplementName = intent.getStringExtra("supplementName") ?: ""
-        // Notification mit "Taken"-Aktion
-        val takenIntent = Intent(context, SupplementMarkTakenReceiver::class.java).apply {
-            putExtra("supplementId", supplementId)
+        val doseId = intent.getIntExtra("doseId", -1)
+        val doseName = intent.getStringExtra("doseName") ?: ""
+        val doseTime = intent.getStringExtra("doseTime") ?: ""
+        val takenIntent = Intent(context, DoseTakenReceiver::class.java).apply {
+            putExtra("doseId", doseId)
+            putExtra("doseTime", doseTime)
         }
         val takenPendingIntent = PendingIntent.getBroadcast(
             context,
-            supplementId,
+            doseId * 100000,
             takenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val builder = androidx.core.app.NotificationCompat.Builder(context, "suppletrack_reminder")
+        val builder = NotificationCompat.Builder(context, "suppletrack_reminder")
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
-            .setContentTitle("Supplement Reminder")
-            .setContentText("Take: $supplementName")
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-            .addAction(
-                android.R.drawable.checkbox_on_background,
-                "Taken",
-                takenPendingIntent
-            )
-            .setAutoCancel(true)
-        NotificationManagerCompat.from(context).notify(supplementId, builder.build())
+            .setContentTitle("Missed Dose Reminder")
+            .setContentText("Did you take $doseName at $doseTime?")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOngoing(true)
+            .addAction(android.R.drawable.checkbox_on_background, "Taken", takenPendingIntent)
+        NotificationManagerCompat.from(context).notify(doseId, builder.build())
     }
 }
 
-// Receiver zum Markieren als genommen (hier nur Notification entfernen, Logik muss ergänzt werden)
-class SupplementMarkTakenReceiver : BroadcastReceiver() {
+class DoseTakenReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val supplementId = intent.getIntExtra("supplementId", -1)
-        NotificationManagerCompat.from(context).cancel(supplementId)
-        // TODO: DoseItem als genommen markieren (z.B. über Repository/Room/SharedPreferences)
-    }
-}
-
-// Push Notification Reminder ohne WorkManager, mit Timer (Demo)
-fun scheduleSupplementReminders(context: Context, doseItems: List<DoseItem>) {
-    doseItems.forEach { item ->
-        item.schedule.times.forEach { time ->
-            val now = LocalTime.now()
-            val today = LocalDate.now()
-            val targetDateTime = today.atTime(time)
-            val calendar = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, time.hour)
-                set(Calendar.MINUTE, time.minute)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-            if (calendar.timeInMillis < System.currentTimeMillis()) {
-                calendar.add(Calendar.DAY_OF_MONTH, 1)
-            }
-            val intent = Intent(context, SupplementTakenReceiver::class.java).apply {
-                putExtra("supplementId", item.id)
-                putExtra("supplementName", item.name)
-            }
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                item.id,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            // AlarmManager für Demo (in echten Apps: JobScheduler/ForegroundService für Zuverlässigkeit)
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            alarmManager.setExact(
-                android.app.AlarmManager.RTC_WAKEUP,
-                calendar.timeInMillis,
-                pendingIntent
-            )
+        val doseId = intent.getIntExtra("doseId", -1)
+        val doseTime = intent.getStringExtra("doseTime")
+        NotificationManagerCompat.from(context).cancel(doseId)
+        // Markiere die Einnahme als "genommen" in der UI via Broadcast
+        val uiIntent = Intent("com.efvs.suppletrack.DOSE_TAKEN_UI").apply {
+            putExtra("doseId", doseId)
+            putExtra("doseTime", doseTime)
         }
+        context.sendBroadcast(uiIntent)
     }
 }
