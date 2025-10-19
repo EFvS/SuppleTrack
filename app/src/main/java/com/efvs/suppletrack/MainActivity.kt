@@ -108,6 +108,10 @@ data class DoseLog(
 class MainActivity : ComponentActivity() {
     private lateinit var doseTakenBroadcastReceiver: BroadcastReceiver
 
+    // Neu: Notification Toggle persistent speichern
+    private val PREFS_NAME = "suppletrack"
+    private val PREFS_NOTIF_KEY = "notifications_enabled"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -175,12 +179,52 @@ class MainActivity : ComponentActivity() {
             // Standardmäßig Englisch
             var language by remember { mutableStateOf(AppLanguage.EN) }
             var darkMode by remember { mutableStateOf(true) }
+            // Notification Toggle aus SharedPreferences laden
+            var notificationsEnabled by remember {
+                mutableStateOf(
+                    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .getBoolean(PREFS_NOTIF_KEY, true)
+                )
+            }
+
+            // Wenn Toggle geändert wird, Permission prüfen und speichern
+            fun handleNotificationsChange(enabled: Boolean) {
+                notificationsEnabled = enabled
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().putBoolean(PREFS_NOTIF_KEY, enabled).apply()
+                if (enabled) {
+                    // Prüfe und fordere alle nötigen Berechtigungen
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+                        }
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                        if (!alarmManager.canScheduleExactAlarms()) {
+                            AlertDialog.Builder(this)
+                                .setTitle("Permission required")
+                                .setMessage("Please allow exact alarms in system settings for SuppleTrack to show reminders.")
+                                .setPositiveButton("Open settings") { _, _ ->
+                                    val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                                    intent.data = Uri.parse("package:$packageName")
+                                    startActivity(intent)
+                                }
+                                .setNegativeButton("Cancel", null)
+                                .show()
+                        }
+                    }
+                }
+            }
+
             SuppleTrackTheme(darkMode) {
                 AppRoot(
                     darkMode = darkMode,
                     onDarkModeChange = { darkMode = it },
                     language = language,
-                    onLanguageChange = { language = it }
+                    onLanguageChange = { language = it },
+                    notificationsEnabled = notificationsEnabled,
+                    onNotificationsChange = { handleNotificationsChange(it) }
                 )
             }
         }
@@ -221,7 +265,9 @@ fun AppRoot(
     darkMode: Boolean,
     onDarkModeChange: (Boolean) -> Unit,
     language: AppLanguage,
-    onLanguageChange: (AppLanguage) -> Unit
+    onLanguageChange: (AppLanguage) -> Unit,
+    notificationsEnabled: Boolean,
+    onNotificationsChange: (Boolean) -> Unit
 ) {
     // Simulierte Datenhaltung (ersetzbar durch ViewModel/Room)
     var doseItems by remember { mutableStateOf(
@@ -238,12 +284,44 @@ fun AppRoot(
             )
         )
     ) }
-    var selectedScreen by remember { mutableStateOf(MainScreen.Checklist) }
+    // Synchronisiere AdherenceLog mit SharedPreferences (Push Notification Logik)
     val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("suppletrack", Context.MODE_PRIVATE)
+        val today = LocalDate.now()
+        doseItems.forEachIndexed { idx, item ->
+            item.schedule.times.forEach { time ->
+                val key = "taken_${item.id}_${time.format(DateTimeFormatter.ofPattern("HH:mm"))}_$today"
+                if (prefs.getBoolean(key, false)) {
+                    if (item.adherenceLog.none { it.date == today && it.time == time && it.status == DoseStatus.TAKEN }) {
+                        item.adherenceLog.add(DoseLog(today, time, DoseStatus.TAKEN, null))
+                    }
+                }
+            }
+        }
+        doseItems = doseItems.toMutableList()
+    }
 
-    // Reminder: Bei jeder Änderung der Dosen und beim Start planen
-    LaunchedEffect(doseItems, language) {
-        scheduleMissedDoseNotifications(context, doseItems)
+    // Reminder: Bei jeder Änderung der Dosen und beim Start planen, aber nur wenn Notifications aktiviert
+    LaunchedEffect(doseItems, language, notificationsEnabled) {
+        if (notificationsEnabled) {
+            scheduleMissedDoseNotifications(context, doseItems)
+        } else {
+            // Alle geplanten Notifications entfernen
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            for (item in doseItems) {
+                for (time in item.schedule.times) {
+                    val pendingIntent = PendingIntent.getBroadcast(
+                        context,
+                        item.id * 10000 + time.hour * 100 + time.minute,
+                        Intent(context, MissedDoseReceiver::class.java),
+                        PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    pendingIntent?.let { alarmManager.cancel(it) }
+                }
+            }
+            NotificationManagerCompat.from(context).cancelAll()
+        }
     }
 
     // Broadcast-Receiver für UI-Update
@@ -272,6 +350,9 @@ fun AppRoot(
             context.unregisterReceiver(doseTakenUiReceiver.value)
         }
     }
+
+    // Fix: State für ausgewählten Screen
+    var selectedScreen by remember { mutableStateOf(MainScreen.Checklist) }
 
     Scaffold(
         bottomBar = {
@@ -310,8 +391,8 @@ fun AppRoot(
                 MainScreen.Settings -> SettingsScreen(
                     darkMode = darkMode,
                     onDarkModeChange = onDarkModeChange,
-                    notificationsEnabled = true,
-                    onNotificationsChange = {},
+                    notificationsEnabled = notificationsEnabled,
+                    onNotificationsChange = onNotificationsChange,
                     language = language,
                     onLanguageChange = onLanguageChange
                 )
@@ -486,7 +567,10 @@ fun DoseManageScreen(
             onDismissRequest = { deleteIdx = null },
             title = { Text(tr("delete_confirm", language)) },
             confirmButton = {
-                Button(onClick = { onDelete(deleteIdx!!); deleteIdx = null }) { Text(tr("yes", language)) }
+                Button(onClick = {
+                    deleteIdx?.let { idx -> onDelete(idx) }
+                    deleteIdx = null
+                }) { Text(tr("yes", language)) }
             },
             dismissButton = {
                 Button(onClick = { deleteIdx = null }) { Text(tr("no", language)) }
@@ -1203,64 +1287,75 @@ fun tr(key: String, lang: AppLanguage): String {
 // Verbesserte Version: Notification bleibt bis zur Einnahme sichtbar, Reminder wird täglich neu gesetzt
 fun scheduleMissedDoseNotifications(context: Context, doseItems: List<DoseItem>) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-    doseItems.forEach { item ->
-        val time = item.schedule.times.firstOrNull() ?: return@forEach
-        val today = LocalDate.now()
-        val calendar = Calendar.getInstance().apply {
-            set(Calendar.YEAR, today.year)
-            set(Calendar.MONTH, today.monthValue - 1)
-            set(Calendar.DAY_OF_MONTH, today.dayOfMonth)
-            set(Calendar.HOUR_OF_DAY, time.hour)
-            set(Calendar.MINUTE, time.minute)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        if (calendar.timeInMillis < System.currentTimeMillis()) return@forEach
-        val intent = Intent(context, MissedDoseReceiver::class.java).apply {
-            putExtra("doseId", item.id)
-            putExtra("doseName", item.name)
-            putExtra("doseTime", time.format(DateTimeFormatter.ofPattern("HH:mm")))
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            item.id * 1000 + time.hour * 100 + time.minute,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        try {
-            val canSchedule = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                alarmManager.canScheduleExactAlarms()
-            } else true
-            if (canSchedule) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    calendar.timeInMillis,
-                    pendingIntent
-                )
+    val prefs = context.getSharedPreferences("suppletrack", Context.MODE_PRIVATE)
+    val today = LocalDate.now()
+    for (item in doseItems) {
+        for (time in item.schedule.times) {
+            val key = "taken_${item.id}_${time.format(DateTimeFormatter.ofPattern("HH:mm"))}_${today}"
+            val alreadyTaken = prefs.getBoolean(key, false)
+            val calendar = Calendar.getInstance().apply {
+                set(Calendar.YEAR, today.year)
+                set(Calendar.MONTH, today.monthValue - 1)
+                set(Calendar.DAY_OF_MONTH, today.dayOfMonth)
+                set(Calendar.HOUR_OF_DAY, time.hour)
+                set(Calendar.MINUTE, time.minute)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
             }
-        } catch (e: SecurityException) {
-            e.printStackTrace()
+            if (calendar.timeInMillis < System.currentTimeMillis()) continue
+            val intent = Intent(context, MissedDoseReceiver::class.java).apply {
+                putExtra("doseId", item.id)
+                putExtra("doseName", item.name)
+                putExtra("doseTime", time.format(DateTimeFormatter.ofPattern("HH:mm")))
+                putExtra("doseDate", today.toString())
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                item.id * 10000 + time.hour * 100 + time.minute,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            try {
+                val canSchedule = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    alarmManager.canScheduleExactAlarms()
+                } else true
+                if (canSchedule && !alreadyTaken) {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
+                    )
+                    Log.d("SuppleTrack", "Alarm gesetzt für ${item.name} um $time am $today")
+                } else {
+                    Log.d("SuppleTrack", "Kein Alarm für ${item.name} um $time (bereits genommen oder keine Berechtigung)")
+                }
+            } catch (e: SecurityException) {
+                Log.e("SuppleTrack", "SecurityException beim Setzen des Alarms: ${e.message}")
+            }
         }
     }
 }
 
-// Senior Dev 3: Logging und Robustheit für Notification-Receiver
+// MissedDoseReceiver: Zeigt Notification, wenn noch nicht genommen
 class MissedDoseReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val doseId = intent.getIntExtra("doseId", -1)
         val doseName = intent.getStringExtra("doseName") ?: ""
         val doseTime = intent.getStringExtra("doseTime") ?: ""
+        val doseDate = intent.getStringExtra("doseDate") ?: LocalDate.now().toString()
         val prefs = context.getSharedPreferences("suppletrack", Context.MODE_PRIVATE)
-        val todayKey = "taken_${doseId}_$doseTime"
-        val alreadyTaken = prefs.getBoolean(todayKey, false)
+        val key = "taken_${doseId}_${doseTime}_$doseDate"
+        val alreadyTaken = prefs.getBoolean(key, false)
+        Log.d("SuppleTrack", "MissedDoseReceiver: $doseName $doseTime $doseDate alreadyTaken=$alreadyTaken")
         if (!alreadyTaken) {
             val takenIntent = Intent(context, DoseTakenReceiver::class.java).apply {
                 putExtra("doseId", doseId)
                 putExtra("doseTime", doseTime)
+                putExtra("doseDate", doseDate)
             }
             val takenPendingIntent = PendingIntent.getBroadcast(
                 context,
-                doseId * 100000,
+                doseId * 1000000 + doseTime.replace(":", "").toInt() ?: 0,
                 takenIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -1277,48 +1372,10 @@ class MissedDoseReceiver : BroadcastReceiver() {
                     takenPendingIntent
                 )
                 .setOnlyAlertOnce(false)
-            NotificationManagerCompat.from(context).notify(doseId, builder.build())
-            Log.d("SuppleTrack", "Notification shown for $doseName at $doseTime")
+            NotificationManagerCompat.from(context).notify((doseId.toString() + doseTime.replace(":", "")).toInt(), builder.build())
+            Log.d("SuppleTrack", "Notification angezeigt für $doseName $doseTime $doseDate")
         } else {
-            Log.d("SuppleTrack", "No notification for $doseName at $doseTime (already taken)")
-        }
-        // Reminder für nächsten Tag setzen (wiederkehrende Erinnerung)
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = System.currentTimeMillis()
-            add(Calendar.DAY_OF_YEAR, 1)
-            val timeParts = doseTime.split(":")
-            set(Calendar.HOUR_OF_DAY, timeParts.getOrNull(0)?.toIntOrNull() ?: 8)
-            set(Calendar.MINUTE, timeParts.getOrNull(1)?.toIntOrNull() ?: 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        val nextIntent = Intent(context, MissedDoseReceiver::class.java).apply {
-            putExtra("doseId", doseId)
-            putExtra("doseName", doseName)
-            putExtra("doseTime", doseTime)
-        }
-        val nextPendingIntent = PendingIntent.getBroadcast(
-            context,
-            doseId * 1000 + (doseTime.replace(":", "").toIntOrNull() ?: 0),
-            nextIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        try {
-            val canSchedule = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                val am = context.getSystemService(AlarmManager::class.java)
-                am.canScheduleExactAlarms()
-            } else true
-            if (canSchedule) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    calendar.timeInMillis,
-                    nextPendingIntent
-                )
-                Log.d("SuppleTrack", "Rescheduled alarm for $doseName at $doseTime for next day")
-            }
-        } catch (e: SecurityException) {
-            Log.e("SuppleTrack", "SecurityException while rescheduling alarm: ${e.message}")
+            Log.d("SuppleTrack", "Keine Notification für $doseName $doseTime $doseDate (bereits genommen)")
         }
     }
 }
@@ -1326,16 +1383,19 @@ class MissedDoseReceiver : BroadcastReceiver() {
 class DoseTakenReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val doseId = intent.getIntExtra("doseId", -1)
-        val doseTime = intent.getStringExtra("doseTime")
-        NotificationManagerCompat.from(context).cancel(doseId)
+        val doseTime = intent.getStringExtra("doseTime") ?: ""
+        val doseDate = intent.getStringExtra("doseDate") ?: LocalDate.now().toString()
         val prefs = context.getSharedPreferences("suppletrack", Context.MODE_PRIVATE)
-        val todayKey = "taken_${doseId}_$doseTime"
-        prefs.edit().putBoolean(todayKey, true).apply()
+        val key = "taken_${doseId}_${doseTime}_$doseDate"
+        prefs.edit().putBoolean(key, true).apply()
+        NotificationManagerCompat.from(context).cancel((doseId.toString() + doseTime.replace(":", "")).toInt())
+        // Sende UI-Broadcast
         val uiIntent = Intent("com.efvs.suppletrack.DOSE_TAKEN_UI").apply {
             putExtra("doseId", doseId)
             putExtra("doseTime", doseTime)
+            putExtra("doseDate", doseDate)
         }
         context.sendBroadcast(uiIntent)
-        Log.d("SuppleTrack", "Dose marked as taken for $doseId at $doseTime, notification removed.")
+        Log.d("SuppleTrack", "DoseTakenReceiver: als genommen markiert $doseId $doseTime $doseDate")
     }
 }
