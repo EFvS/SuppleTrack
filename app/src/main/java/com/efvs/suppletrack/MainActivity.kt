@@ -39,10 +39,11 @@ enum class DoseStatus { TAKEN, SKIPPED, MISSED }
 
 data class DoseSchedule(
     val times: List<LocalTime> = listOf(LocalTime.of(8,0)),
-    val recurrenceDays: List<Int> = (0..6).toList(),
-    val durationDays: Int? = null
+    val recurrenceDays: List<Int> = (0..6).toList(), // 0=Montag
+    val durationDays: Int? = null // z.B. 7 Tage
 )
 
+// RefillThreshold entfernt aus DoseItem
 data class DoseItem(
     val id: Int,
     var name: String,
@@ -58,6 +59,10 @@ data class DoseLog(
     val status: DoseStatus,
     val reason: String? = null
 )
+
+data class Profile(val name: String)
+data class Supplement(val name: String, var taken: Boolean = false)
+data class IntakeHistory(val date: LocalDate, val supplement: String, val taken: Boolean)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,7 +97,7 @@ class MainActivity : ComponentActivity() {
 enum class MainScreen(val label: String, val icon: ImageVector) {
     Checklist("Checkliste", Icons.AutoMirrored.Filled.List),
     Calendar("Kalender", Icons.Filled.DateRange),
-    Manage("Verwalten", Icons.Filled.Edit),
+    Manage("Verwalten", Icons.Filled.Edit), // NEU: Reiter für Hinzufügen/Bearbeiten/Löschen
     Settings("Einstellungen", Icons.Filled.Settings)
 }
 
@@ -103,6 +108,15 @@ fun AppRoot(
     language: AppLanguage,
     onLanguageChange: (AppLanguage) -> Unit
 ) {
+    // Simulierte Datenhaltung (ersetzbar durch ViewModel/Room)
+    var profiles by remember { mutableStateOf(listOf(Profile("Ich"))) }
+    var selectedProfile by remember { mutableStateOf(profiles.first()) }
+    var supplements by remember { mutableStateOf(
+        listOf(
+            Supplement("Creatin"),
+        )
+    )}
+    var intakeHistory by remember { mutableStateOf(listOf<IntakeHistory>()) }
     var doseItems by remember { mutableStateOf(
         mutableListOf(
             DoseItem(
@@ -121,6 +135,7 @@ fun AppRoot(
     var exportDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
+    // Refill-Benachrichtigung entfernt
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -172,7 +187,7 @@ fun AppRoot(
 
     // Reminder planen, wenn DoseItems geändert werden
     LaunchedEffect(doseItems) {
-        scheduleSupplementReminders(context, doseItems)
+        // scheduleSupplementReminders(context, doseItems) // Kommentar entfernt, da WorkManager entfernt wurde
     }
 }
 
@@ -770,6 +785,136 @@ fun ExportDialog(doseItems: List<DoseItem>, onDismiss: () -> Unit) {
 }
 
 @Composable
+fun CalendarScreen(intakeHistory: List<IntakeHistory>) {
+    val today = LocalDate.now()
+    val days = (0..6).map { today.minusDays(it.toLong()) }.reversed()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)
+    ) {
+        Text("Kalender-Übersicht", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        days.forEach { day ->
+            val takenCount = intakeHistory.count { it.date == day && it.taken }
+            val total = intakeHistory.count { it.date == day }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            ) {
+                Text(day.toString(), modifier = Modifier.width(110.dp))
+                Box(
+                    modifier = Modifier
+                        .height(18.dp)
+                        .width(120.dp)
+                        .background(
+                            if (total > 0 && takenCount == total) Color(0xFF81C784)
+                            else if (takenCount > 0) Color(0xFFFFF176)
+                            else Color(0xFFE57373)
+                        )
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("$takenCount/$total")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+fun ProfilesScreen(
+    profiles: List<Profile>,
+    selected: Profile,
+    onSelect: (Profile) -> Unit,
+    onAdd: (String) -> Unit,
+    onDelete: (Profile) -> Unit
+) {
+    var newProfile by remember { mutableStateOf("") }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)
+    ) {
+        Text("Profile", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        LazyColumn {
+            items(profiles) { profile ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(profile) }
+                        .background(if (profile == selected) Color(0xFFE3F2FD) else Color.Transparent)
+                        .padding(8.dp)
+                ) {
+                    Text(profile.name, fontWeight = if (profile == selected) FontWeight.Bold else FontWeight.Normal)
+                    Spacer(Modifier.weight(1f))
+                    if (profiles.size > 1) {
+                        IconButton(onClick = { onDelete(profile) }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Löschen")
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = newProfile,
+                onValueChange = { newProfile = it },
+                label = { Text("Neues Profil") },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                onAdd(newProfile.trim())
+                newProfile = ""
+            }) {
+                Text("Hinzufügen")
+            }
+        }
+    }
+}
+
+@Composable
+fun ExportScreen(onExport: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Export & Backup", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onExport) {
+            Icon(Icons.Default.Warning, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Exportieren (Demo)")
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Exportiere deine Einnahme-Historie oder sichere deine Daten in Google Drive.")
+    }
+}
+
+@Composable
+fun WidgetScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Widget", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(16.dp))
+        Text("Füge das SuppleTrack-Widget zu deinem Homescreen hinzu, um die Tages-Checkliste schnell zu sehen.")
+    }
+}
+
+@Composable
 fun SettingsScreen(
     darkMode: Boolean,
     onDarkModeChange: (Boolean) -> Unit,
@@ -1099,8 +1244,7 @@ class SupplementTakenReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val supplementId = intent.getIntExtra("supplementId", -1)
         val supplementName = intent.getStringExtra("supplementName") ?: ""
-        if (supplementId == -1 || supplementName.isBlank()) return
-
+        // Notification mit "Taken"-Aktion
         val takenIntent = Intent(context, SupplementMarkTakenReceiver::class.java).apply {
             putExtra("supplementId", supplementId)
         }
@@ -1120,8 +1264,7 @@ class SupplementTakenReceiver : BroadcastReceiver() {
                 "Taken",
                 takenPendingIntent
             )
-            .setOngoing(true)
-            .setAutoCancel(false)
+            .setAutoCancel(true)
         NotificationManagerCompat.from(context).notify(supplementId, builder.build())
     }
 }
@@ -1130,48 +1273,44 @@ class SupplementTakenReceiver : BroadcastReceiver() {
 class SupplementMarkTakenReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val supplementId = intent.getIntExtra("supplementId", -1)
-        if (supplementId == -1) return
         NotificationManagerCompat.from(context).cancel(supplementId)
-        // Die eigentliche Markierung als "genommen" erfolgt über die App-Logik (z.B. Repository/ViewModel)
+        // TODO: DoseItem als genommen markieren (z.B. über Repository/Room/SharedPreferences)
     }
 }
 
+// Push Notification Reminder ohne WorkManager, mit Timer (Demo)
 fun scheduleSupplementReminders(context: Context, doseItems: List<DoseItem>) {
-    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-    val today = LocalDate.now()
-    doseItems.filter { it.type == DoseType.SUPPLEMENT }.forEach { item ->
+    doseItems.forEach { item ->
         item.schedule.times.forEach { time ->
-            val alreadyTaken = item.adherenceLog.any { it.date == today && it.status == DoseStatus.TAKEN }
+            val now = LocalTime.now()
+            val today = LocalDate.now()
+            val targetDateTime = today.atTime(time)
             val calendar = Calendar.getInstance().apply {
-                set(Calendar.YEAR, today.year)
-                set(Calendar.MONTH, today.monthValue - 1)
-                set(Calendar.DAY_OF_MONTH, today.dayOfMonth)
                 set(Calendar.HOUR_OF_DAY, time.hour)
                 set(Calendar.MINUTE, time.minute)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
             }
-            val triggerTime = calendar.timeInMillis
-            val nowMillis = System.currentTimeMillis()
-            if (!alreadyTaken && triggerTime > nowMillis) {
-                val intent = Intent(context, SupplementTakenReceiver::class.java).apply {
-                    putExtra("supplementId", item.id)
-                    putExtra("supplementName", item.name)
-                }
-                val pendingIntent = PendingIntent.getBroadcast(
-                    context,
-                    item.id,
-                    intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                alarmManager.setExact(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    triggerTime,
-                    pendingIntent
-                )
-            } else {
-                NotificationManagerCompat.from(context).cancel(item.id)
+            if (calendar.timeInMillis < System.currentTimeMillis()) {
+                calendar.add(Calendar.DAY_OF_MONTH, 1)
             }
+            val intent = Intent(context, SupplementTakenReceiver::class.java).apply {
+                putExtra("supplementId", item.id)
+                putExtra("supplementName", item.name)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                item.id,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            // AlarmManager für Demo (in echten Apps: JobScheduler/ForegroundService für Zuverlässigkeit)
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.setExact(
+                android.app.AlarmManager.RTC_WAKEUP,
+                calendar.timeInMillis,
+                pendingIntent
+            )
         }
     }
 }
