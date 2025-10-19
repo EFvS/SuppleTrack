@@ -86,19 +86,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            // Standardmäßig Englisch
-            var language by remember { mutableStateOf(AppLanguage.EN) }
-            var darkMode by remember { mutableStateOf(true) }
-            SuppleTrackTheme(darkMode) {
-                AppRoot(
-                    darkMode = darkMode,
-                    onDarkModeChange = { darkMode = it },
-                    language = language,
-                    onLanguageChange = { language = it }
-                )
-            }
-        }
 
         // Notification Channel für Reminder
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -130,6 +117,21 @@ class MainActivity : ComponentActivity() {
             IntentFilter("com.efvs.suppletrack.DOSE_TAKEN"),
             Context.RECEIVER_NOT_EXPORTED
         )
+
+        // setContent MUSS als letztes im onCreate stehen!
+        setContent {
+            // Standardmäßig Englisch
+            var language by remember { mutableStateOf(AppLanguage.EN) }
+            var darkMode by remember { mutableStateOf(true) }
+            SuppleTrackTheme(darkMode) {
+                AppRoot(
+                    darkMode = darkMode,
+                    onDarkModeChange = { darkMode = it },
+                    language = language,
+                    onLanguageChange = { language = it }
+                )
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -140,7 +142,7 @@ class MainActivity : ComponentActivity() {
 
 enum class MainScreen(val labelKey: String, val icon: ImageVector) {
     Checklist("checklist", Icons.AutoMirrored.Filled.List),
-    Calendar("calendar", Icons.Filled.Star),
+    Calendar("calendar", Icons.Filled.DateRange),
     Manage("manage", Icons.Filled.Edit),
     Settings("settings", Icons.Filled.Settings)
 }
@@ -220,10 +222,10 @@ fun AppRoot(
             when (selectedScreen) {
                 MainScreen.Checklist -> DoseChecklistScreen(
                     doseItems = doseItems,
-                    onLogIntake = { idx, status, reason ->
+                    onLogIntake = { idx, status, reason, date ->
                         val item = doseItems[idx]
                         val now = LocalTime.now()
-                        item.adherenceLog.add(DoseLog(LocalDate.now(), now, status, reason))
+                        item.adherenceLog.add(DoseLog(date, now, status, reason))
                         doseItems = doseItems.toMutableList()
                     },
                     language = language
@@ -253,27 +255,64 @@ fun AppRoot(
 @Composable
 fun DoseChecklistScreen(
     doseItems: List<DoseItem>,
-    onLogIntake: (Int, DoseStatus, String?) -> Unit,
+    onLogIntake: (Int, DoseStatus, String?, LocalDate) -> Unit,
     language: AppLanguage
 ) {
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    val context = LocalContext.current
+    // Lokale Kopie für sofortiges UI-Feedback
+    var localDoseItems by remember { mutableStateOf(doseItems.map { it.copy(adherenceLog = it.adherenceLog.toMutableList()) }) }
+
+    // Synchronisiere lokale Kopie, wenn doseItems sich ändern (z.B. durch Navigation)
+    LaunchedEffect(doseItems, selectedDate) {
+        localDoseItems = doseItems.map { it.copy(adherenceLog = it.adherenceLog.toMutableList()) }
+    }
+
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Text(tr("checklist", language), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
+        // Datumsauswahl für vergangene Tage
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(tr("date", language) + ": ", fontWeight = FontWeight.Bold)
+            Text(selectedDate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")))
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                val now = selectedDate
+                DatePickerDialog(
+                    context,
+                    { _, year, month, dayOfMonth ->
+                        selectedDate = LocalDate.of(year, month + 1, dayOfMonth)
+                    },
+                    now.year, now.monthValue - 1, now.dayOfMonth
+                ).show()
+            }) {
+                Icon(Icons.Default.DateRange, contentDescription = "Pick date")
+            }
+        }
+        Spacer(Modifier.height(16.dp))
         LazyColumn {
-            items(doseItems.withIndex().toList()) { (idx, item) ->
-                val todayLog = item.adherenceLog.findLast { it.date == LocalDate.now() }
-                val checked = todayLog?.status == DoseStatus.TAKEN
+            items(localDoseItems.withIndex().toList()) { (idx, item) ->
+                val dayLog = item.adherenceLog.findLast { it.date == selectedDate }
+                val checked = dayLog?.status == DoseStatus.TAKEN
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 6.dp)
+                        .background(MaterialTheme.colorScheme.surface)
                         .clickable {
-                            // Toggle beim Klick auf das Card-Item
+                            val updatedItems = localDoseItems.toMutableList()
+                            val updatedItem = updatedItems[idx].copy(adherenceLog = updatedItems[idx].adherenceLog.toMutableList())
                             if (checked) {
-                                item.adherenceLog.removeIf { it.date == LocalDate.now() && it.status == DoseStatus.TAKEN }
+                                // Toggle auf "nicht genommen"
+                                updatedItem.adherenceLog.removeIf { it.date == selectedDate && it.status == DoseStatus.TAKEN }
+                                onLogIntake(idx, DoseStatus.SKIPPED, null, selectedDate)
                             } else {
-                                onLogIntake(idx, DoseStatus.TAKEN, null)
+                                // Toggle auf "genommen"
+                                updatedItem.adherenceLog.add(DoseLog(selectedDate, LocalTime.now(), DoseStatus.TAKEN, null))
+                                onLogIntake(idx, DoseStatus.TAKEN, null, selectedDate)
                             }
+                            updatedItems[idx] = updatedItem
+                            localDoseItems = updatedItems
                         }
                 ) {
                     Row(
@@ -283,11 +322,17 @@ fun DoseChecklistScreen(
                         Checkbox(
                             checked = checked,
                             onCheckedChange = { isChecked ->
+                                val updatedItems = localDoseItems.toMutableList()
+                                val updatedItem = updatedItems[idx].copy(adherenceLog = updatedItems[idx].adherenceLog.toMutableList())
                                 if (isChecked) {
-                                    onLogIntake(idx, DoseStatus.TAKEN, null)
+                                    updatedItem.adherenceLog.add(DoseLog(selectedDate, LocalTime.now(), DoseStatus.TAKEN, null))
+                                    onLogIntake(idx, DoseStatus.TAKEN, null, selectedDate)
                                 } else {
-                                    item.adherenceLog.removeIf { it.date == LocalDate.now() && it.status == DoseStatus.TAKEN }
+                                    updatedItem.adherenceLog.removeIf { it.date == selectedDate && it.status == DoseStatus.TAKEN }
+                                    onLogIntake(idx, DoseStatus.SKIPPED, null, selectedDate)
                                 }
+                                updatedItems[idx] = updatedItem
+                                localDoseItems = updatedItems
                             }
                         )
                         Spacer(Modifier.width(8.dp))
@@ -947,6 +992,7 @@ fun tr(key: String, lang: AppLanguage): String {
             "fr" -> "Fr"
             "sa" -> "Sa"
             "su" -> "Su"
+            "date" -> "Date"
             else -> key
         }
         AppLanguage.DE -> when (key) {
@@ -990,6 +1036,7 @@ fun tr(key: String, lang: AppLanguage): String {
             "fr" -> "Fr"
             "sa" -> "Sa"
             "su" -> "So"
+            "date" -> "Datum"
             else -> key
         }
         AppLanguage.ES -> when (key) {
@@ -1033,6 +1080,7 @@ fun tr(key: String, lang: AppLanguage): String {
             "fr" -> "Vi"
             "sa" -> "Sa"
             "su" -> "Do"
+            "date" -> "Fecha"
             else -> key
         }
         AppLanguage.FR -> when (key) {
@@ -1076,6 +1124,7 @@ fun tr(key: String, lang: AppLanguage): String {
             "fr" -> "Ve"
             "sa" -> "Sa"
             "su" -> "Di"
+            "date" -> "Date"
             else -> key
         }
     }
