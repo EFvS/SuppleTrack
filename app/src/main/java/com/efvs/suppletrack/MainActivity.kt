@@ -48,9 +48,13 @@ import java.util.Calendar
 
 // Compose Icons
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
-import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Edit
 
 enum class DoseType { MEDICATION, SUPPLEMENT }
 enum class DoseStatus { TAKEN, SKIPPED, MISSED }
@@ -134,11 +138,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class MainScreen(val label: String, val icon: ImageVector) {
-    Checklist("Checkliste", Icons.AutoMirrored.Filled.List),
-    Calendar("Kalender", Icons.Filled.DateRange),
-    Manage("Verwalten", Icons.Filled.Edit), // NEU: Reiter für Hinzufügen/Bearbeiten/Löschen
-    Settings("Einstellungen", Icons.Filled.Settings)
+enum class MainScreen(val labelKey: String, val icon: ImageVector) {
+    Checklist("checklist", Icons.AutoMirrored.Filled.List),
+    Calendar("calendar", Icons.Filled.Star),
+    Manage("manage", Icons.Filled.Edit),
+    Settings("settings", Icons.Filled.Settings)
 }
 
 @Composable
@@ -203,8 +207,8 @@ fun AppRoot(
             NavigationBar {
                 MainScreen.values().forEach { screen ->
                     NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = tr(screen.label.lowercase(), language)) },
-                        label = { Text(tr(screen.label.lowercase(), language)) },
+                        icon = { Icon(screen.icon, contentDescription = tr(screen.labelKey, language)) },
+                        label = { Text(tr(screen.labelKey, language)) },
                         selected = selectedScreen == screen,
                         onClick = { selectedScreen = screen }
                     )
@@ -388,10 +392,12 @@ fun DoseEditDialog(
     var name by remember { mutableStateOf(TextFieldValue(doseItem?.name ?: "")) }
     var dosage by remember { mutableStateOf(TextFieldValue(doseItem?.dosage ?: "")) }
     var type by remember { mutableStateOf(doseItem?.type ?: DoseType.SUPPLEMENT) }
-    var times by remember { mutableStateOf(doseItem?.schedule?.times ?: listOf(LocalTime.of(8,0))) }
+    var time by remember { mutableStateOf(doseItem?.schedule?.times?.firstOrNull() ?: LocalTime.of(8,0)) }
     var recurrenceDays by remember { mutableStateOf(doseItem?.schedule?.recurrenceDays ?: (0..6).toList()) }
 
     val context = LocalContext.current
+
+    val isDaily = recurrenceDays.size == 7
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -411,71 +417,67 @@ fun DoseEditDialog(
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(tr("schedule", language) + ":")
-                times.forEachIndexed { idx, t ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(t.format(DateTimeFormatter.ofPattern("HH:mm")), modifier = Modifier.weight(1f))
-                        IconButton(onClick = {
-                            times = times.toMutableList().apply { removeAt(idx) }
-                        }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Remove time")
-                        }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(time.format(DateTimeFormatter.ofPattern("HH:mm")), modifier = Modifier.weight(1f))
+                    Button(
+                        onClick = {
+                            TimePickerDialog(
+                                context,
+                                { _, hour: Int, minute: Int ->
+                                    time = LocalTime.of(hour, minute)
+                                },
+                                time.hour,
+                                time.minute,
+                                android.text.format.DateFormat.is24HourFormat(context)
+                            ).show()
+                        },
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit time")
+                        Spacer(Modifier.width(8.dp))
+                        Text(tr("edit", language))
                     }
-                }
-                Button(
-                    onClick = {
-                        val now = LocalTime.now()
-                        TimePickerDialog(
-                            context,
-                            { _, hour: Int, minute: Int ->
-                                val newTime = LocalTime.of(hour, minute)
-                                if (!times.contains(newTime)) times = times + newTime
-                            },
-                            now.hour,
-                            now.minute,
-                            android.text.format.DateFormat.is24HourFormat(context)
-                        ).show()
-                    },
-                    modifier = Modifier.padding(vertical = 4.dp)
-                ) {
-                    Icon(Icons.Default.Notifications, contentDescription = "Add time")
-                    Spacer(Modifier.width(8.dp))
-                    Text(tr("add_time", language))
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(tr("repeat", language) + ":")
-                Row {
-                    val daysOfWeek = listOf(
-                        tr("mo", language), tr("tu", language), tr("we", language),
-                        tr("th", language), tr("fr", language), tr("sa", language), tr("su", language)
-                    )
-                    (0..6).forEach { dayIdx ->
-                        val selected = recurrenceDays.contains(dayIdx)
-                        FilterChip(
-                            selected = selected,
-                            onClick = {
-                                recurrenceDays = if (selected) recurrenceDays - dayIdx else recurrenceDays + dayIdx
-                            },
-                            label = { Text(daysOfWeek[dayIdx]) },
-                            modifier = Modifier.padding(end = 2.dp)
-                        )
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
-                        checked = recurrenceDays.size == 7,
+                        checked = isDaily,
                         onCheckedChange = { checked ->
                             recurrenceDays = if (checked) (0..6).toList() else listOf()
                         }
                     )
                     Text(tr("repeat_daily", language))
                 }
+                // Nur anzeigen, wenn NICHT täglich
+                if (!isDaily) {
+                    Spacer(Modifier.height(8.dp))
+                    Column {
+                        val daysOfWeek = listOf(
+                            tr("mo", language), tr("tu", language), tr("we", language),
+                            tr("th", language), tr("fr", language), tr("sa", language), tr("su", language)
+                        )
+                        (0..6).forEach { dayIdx ->
+                            val selected = recurrenceDays.contains(dayIdx)
+                            Row {
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        recurrenceDays = if (selected) recurrenceDays - dayIdx else recurrenceDays + dayIdx
+                                    },
+                                    label = { Text(daysOfWeek[dayIdx]) },
+                                    modifier = Modifier.padding(bottom = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(onClick = {
                 val id = doseItem?.id ?: (0..100000).random()
-                val schedule = DoseSchedule(times = times.sorted(), recurrenceDays = recurrenceDays.sorted())
+                val schedule = DoseSchedule(times = listOf(time), recurrenceDays = recurrenceDays.sorted())
                 onSave(DoseItem(
                     id = id,
                     name = name.text,
@@ -532,7 +534,7 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
                     if (viewMode == "Monat") currentMonth = currentMonth.minusMonths(1)
                     else currentWeekStart = currentWeekStart.minusWeeks(1)
                 }) {
-                    Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Zurück")
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Zurück")
                 }
                 Spacer(Modifier.width(8.dp))
                 if (viewMode == "Monat") {
@@ -556,7 +558,7 @@ fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
                     if (viewMode == "Monat") currentMonth = currentMonth.plusMonths(1)
                     else currentWeekStart = currentWeekStart.plusWeeks(1)
                 }) {
-                    Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Vor")
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Vor")
                 }
             }
         }
@@ -656,7 +658,9 @@ fun MonthCalendar(
             }
         }
         for (week in gridDays.chunked(7)) {
-            Row {
+            Row(
+                modifier = Modifier.padding(vertical = 0.dp) // Abstand zwischen Reihen entfernt
+            ) {
                 week.forEach { day ->
                     val isToday = day == today
                     val logs = day?.let { doseItems.flatMap { it.adherenceLog.filter { log -> log.date == day } } } ?: emptyList()
@@ -1077,46 +1081,46 @@ fun tr(key: String, lang: AppLanguage): String {
     }
 }
 
-// Reminder für verpasste Einnahmen (Android Standard)
+// Reminder für verpasste Einnahmen (nur EIN Timer pro DoseItem, Android Standard)
 fun scheduleMissedDoseNotifications(context: Context, doseItems: List<DoseItem>) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
     doseItems.forEach { item ->
-        item.schedule.times.forEach { time ->
-            val today = LocalDate.now()
-            val alreadyTaken = item.adherenceLog.any { it.date == today && it.time == time && it.status == DoseStatus.TAKEN }
-            if (!alreadyTaken) {
-                val calendar = Calendar.getInstance().apply {
-                    set(Calendar.YEAR, today.year)
-                    set(Calendar.MONTH, today.monthValue - 1)
-                    set(Calendar.DAY_OF_MONTH, today.dayOfMonth)
-                    set(Calendar.HOUR_OF_DAY, time.hour)
-                    set(Calendar.MINUTE, time.minute)
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                if (calendar.timeInMillis < System.currentTimeMillis()) return@forEach
-                val intent = Intent(context, MissedDoseReceiver::class.java).apply {
-                    putExtra("doseId", item.id)
-                    putExtra("doseName", item.name)
-                    putExtra("doseTime", time.format(DateTimeFormatter.ofPattern("HH:mm")))
-                }
-                val pendingIntent = PendingIntent.getBroadcast(
-                    context,
-                    item.id * 1000 + time.hour * 100 + time.minute,
-                    intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        // Nur die erste Zeit im Schedule verwenden
+        val time = item.schedule.times.firstOrNull() ?: return@forEach
+        val today = LocalDate.now()
+        val alreadyTaken = item.adherenceLog.any { it.date == today && it.time == time && it.status == DoseStatus.TAKEN }
+        if (!alreadyTaken) {
+            val calendar = Calendar.getInstance().apply {
+                set(Calendar.YEAR, today.year)
+                set(Calendar.MONTH, today.monthValue - 1)
+                set(Calendar.DAY_OF_MONTH, today.dayOfMonth)
+                set(Calendar.HOUR_OF_DAY, time.hour)
+                set(Calendar.MINUTE, time.minute)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            if (calendar.timeInMillis < System.currentTimeMillis()) return@forEach
+            val intent = Intent(context, MissedDoseReceiver::class.java).apply {
+                putExtra("doseId", item.id)
+                putExtra("doseName", item.name)
+                putExtra("doseTime", time.format(DateTimeFormatter.ofPattern("HH:mm")))
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                item.id * 1000 + time.hour * 100 + time.minute,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            try {
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    calendar.timeInMillis,
+                    pendingIntent
                 )
-                try {
-                    alarmManager.setExact(
-                        AlarmManager.RTC_WAKEUP,
-                        calendar.timeInMillis,
-                        pendingIntent
-                    )
-                } catch (e: SecurityException) {
-                    // Die Permission android.permission.SCHEDULE_EXACT_ALARM fehlt im Manifest!
-                    // <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
-                    e.printStackTrace()
-                }
+            } catch (e: SecurityException) {
+                // Die Permission android.permission.SCHEDULE_EXACT_ALARM fehlt im Manifest!
+                // <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+                e.printStackTrace()
             }
         }
     }
