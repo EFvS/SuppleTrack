@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.app.TimePickerDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -334,13 +335,10 @@ fun DoseEditDialog(
     var name by remember { mutableStateOf(TextFieldValue(doseItem?.name ?: "")) }
     var dosage by remember { mutableStateOf(TextFieldValue(doseItem?.dosage ?: "")) }
     var type by remember { mutableStateOf(doseItem?.type ?: DoseType.SUPPLEMENT) }
-    // Zeitplan: mehrere Zeiten
     var times by remember { mutableStateOf(doseItem?.schedule?.times ?: listOf(LocalTime.of(8,0))) }
-    // Wochentage: 0=Montag ... 6=Sonntag
     var recurrenceDays by remember { mutableStateOf(doseItem?.schedule?.recurrenceDays ?: (0..6).toList()) }
-    var showTimePicker by remember { mutableStateOf(false) }
-    var timePickerHour by remember { mutableStateOf(8) }
-    var timePickerMinute by remember { mutableStateOf(0) }
+
+    val context = LocalContext.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -360,7 +358,6 @@ fun DoseEditDialog(
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(tr("schedule", language) + ":")
-                // Anzeige der Zeiten
                 times.forEachIndexed { idx, t ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(t.format(DateTimeFormatter.ofPattern("HH:mm")), modifier = Modifier.weight(1f))
@@ -372,24 +369,24 @@ fun DoseEditDialog(
                     }
                 }
                 Button(
-                    onClick = { showTimePicker = true },
+                    onClick = {
+                        val now = LocalTime.now()
+                        TimePickerDialog(
+                            context,
+                            { _, hour: Int, minute: Int ->
+                                val newTime = LocalTime.of(hour, minute)
+                                if (!times.contains(newTime)) times = times + newTime
+                            },
+                            now.hour,
+                            now.minute,
+                            android.text.format.DateFormat.is24HourFormat(context)
+                        ).show()
+                    },
                     modifier = Modifier.padding(vertical = 4.dp)
                 ) {
                     Icon(Icons.Default.Notifications, contentDescription = "Add time")
                     Spacer(Modifier.width(8.dp))
                     Text(tr("add_time", language))
-                }
-                if (showTimePicker) {
-                    TimePickerDialog(
-                        initialHour = timePickerHour,
-                        initialMinute = timePickerMinute,
-                        onDismiss = { showTimePicker = false },
-                        onConfirm = { hour, minute ->
-                            val newTime = LocalTime.of(hour, minute)
-                            if (!times.contains(newTime)) times = times + newTime
-                            showTimePicker = false
-                        }
-                    )
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(tr("repeat", language) + ":")
@@ -439,60 +436,7 @@ fun DoseEditDialog(
     )
 }
 
-// Einfacher TimePickerDialog für Compose
-@Composable
-fun TimePickerDialog(
-    initialHour: Int,
-    initialMinute: Int,
-    onDismiss: () -> Unit,
-    onConfirm: (Int, Int) -> Unit
-) {
-    var hour by remember { mutableStateOf(initialHour) }
-    var minute by remember { mutableStateOf(initialMinute) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Zeit wählen") },
-        text = {
-            Column {
-                Text("Stunde: ${hour}", fontWeight = FontWeight.Bold)
-                Slider(
-                    value = hour.toFloat(),
-                    onValueChange = { hour = it.toInt() },
-                    valueRange = 0f..23f,
-                    steps = 22
-                )
-                Spacer(Modifier.height(8.dp))
-                Text("Minute: ${minute}", fontWeight = FontWeight.Bold)
-                Slider(
-                    value = minute.toFloat(),
-                    onValueChange = { minute = it.toInt() },
-                    valueRange = 0f..59f,
-                    steps = 58
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = { onConfirm(hour, minute) }) { Text("OK") }
-        },
-        dismissButton = { Button(onClick = onDismiss) { Text("Abbrechen") } }
-    )
-}
-
-// Einfacher NumberPicker für Compose
-@Composable
-fun NumberPicker(value: Int, range: IntRange, onValueChange: (Int) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = { if (value > range.first) onValueChange(value - 1) }) {
-            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Minus")
-        }
-        Text(value.toString(), modifier = Modifier.width(32.dp), fontWeight = FontWeight.Bold)
-        IconButton(onClick = { if (value < range.last) onValueChange(value + 1) }) {
-            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Plus")
-        }
-    }
-}
-
-// Kalender mit Adherence-Score und Detail
+// Einfacher Kalender mit Adherence-Score und Detail
 @Composable
 fun DoseCalendarScreen(doseItems: List<DoseItem>, language: AppLanguage) {
     var viewMode by remember { mutableStateOf("Monat") }
